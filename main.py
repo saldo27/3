@@ -29,9 +29,9 @@ class WelcomeScreen(Screen):
         super(WelcomeScreen, self).__init__(**kwargs)
         layout = BoxLayout(orientation='vertical', padding=20, spacing=10)
         
-        layout.add_widget(Label(text='Welcome to Shift Scheduler'))
+        layout.add_widget(Label(text='Bienvenido'))
         
-        start_btn = Button(text='Start Scheduling', size_hint_y=None, height=50)
+        start_btn = Button(text='Comienza el reparto', size_hint_y=None, height=50)
         start_btn.bind(on_press=self.switch_to_setup)
         layout.add_widget(start_btn)
         
@@ -48,17 +48,17 @@ class SetupScreen(Screen):
         layout.add_widget(Label(text='Setup'))
     
        # Start Date
-        layout.add_widget(Label(text='Start Date (DD-MM-YYYY):'))
+        layout.add_widget(Label(text='Fecha de inicio (DD-MM-YYYY):'))
         self.start_date = TextInput(multiline=False)
         layout.add_widget(self.start_date)
     
         # End Date
-        layout.add_widget(Label(text='End Date (DD-MM-YYYY):'))
+        layout.add_widget(Label(text='Fecha final (DD-MM-YYYY):'))
         self.end_date = TextInput(multiline=False)
         layout.add_widget(self.end_date)
     
         # Holidays
-        layout.add_widget(Label(text='Holidays (DD-MM-YYYY, semicolon-separated):'))
+        layout.add_widget(Label(text='Festivos (DD-MM-YYYY, semicolon-separated):'))
         self.holidays = TextInput(
             multiline=True,
            hint_text='Example: 25-12-2025; 01-01-2026'
@@ -66,17 +66,17 @@ class SetupScreen(Screen):
         layout.add_widget(self.holidays)
     
         # Number of Workers
-        layout.add_widget(Label(text='Number of Workers:'))
+        layout.add_widget(Label(text='Número de médicos:'))
         self.num_workers = TextInput(multiline=False, input_filter='int')
         layout.add_widget(self.num_workers)
     
         # Number of Shifts per Day
-        layout.add_widget(Label(text='Number of Shifts per Day:'))
+        layout.add_widget(Label(text='Número de guardias/día:'))
         self.num_shifts = TextInput(multiline=False, input_filter='int')
         layout.add_widget(self.num_shifts)
     
         # Continue Button
-        continue_btn = Button(text='Continue', size_hint_y=None, height=50)
+        continue_btn = Button(text='Continuar', size_hint_y=None, height=50)
         continue_btn.bind(on_press=self.validate_and_continue)
         layout.add_widget(continue_btn)
     
@@ -518,81 +518,83 @@ class WorkerDetailsScreen(Screen):
         logging.info(f"Entered WorkerDetailsScreen: Worker {current_index + 1}/{total_workers}")
 
 class CalendarViewScreen(Screen):
+    # Replace in your CalendarViewScreen class:
+
     def __init__(self, **kwargs):
         super(CalendarViewScreen, self).__init__(**kwargs)
         self.layout = BoxLayout(orientation='vertical', padding=10, spacing=5)
-    
+
         # Header with title and navigation
         header = BoxLayout(orientation='horizontal', size_hint_y=0.1)
         self.month_label = Label(text='', size_hint_x=0.4)
         prev_month = Button(text='<', size_hint_x=0.2)
         next_month = Button(text='>', size_hint_x=0.2)
         summary_btn = Button(text='Summary', size_hint_x=0.2)
-    
+
         prev_month.bind(on_press=self.previous_month)
         next_month.bind(on_press=self.next_month)
         summary_btn.bind(on_press=self.show_month_summary)
-    
+
         header.add_widget(prev_month)
         header.add_widget(self.month_label)
         header.add_widget(next_month)
         header.add_widget(summary_btn)
         self.layout.add_widget(header)
-    
+
         # Days of week header
         days_header = GridLayout(cols=7, size_hint_y=0.1)
-        for day in ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']:
+        for day in ['Lun', 'Mar', 'Mx', 'Jue', 'Vn', 'Sab', 'Dom']:
             days_header.add_widget(Label(text=day))
         self.layout.add_widget(days_header)
-    
+
         # Calendar grid
         self.calendar_grid = GridLayout(cols=7, size_hint_y=0.7)
         self.layout.add_widget(self.calendar_grid)
-    
+
         # Scroll view for details
         details_scroll = ScrollView(size_hint_y=0.3)
         self.details_layout = GridLayout(cols=1, size_hint_y=None)
         self.details_layout.bind(minimum_height=self.details_layout.setter('height'))
         details_scroll.add_widget(self.details_layout)
         self.layout.add_widget(details_scroll)
-    
+
         # Export buttons
         button_layout = BoxLayout(orientation='horizontal', size_hint_y=0.1, spacing=10)
         save_btn = Button(text='Save to JSON')
         export_txt_btn = Button(text='Export to TXT')
-        export_pdf_btn = Button(text='Export to PDF')  # New button
-        stats_btn = Button(text='Worker Stats')
+        export_pdf_btn = Button(text='Export to PDF')
+        reset_btn = Button(text='Reset Schedule')  # Changed from stats_btn
 
         save_btn.bind(on_press=self.save_schedule)
         export_txt_btn.bind(on_press=self.export_schedule)
-        export_pdf_btn.bind(on_press=self.export_to_pdf)  # New binding
-        stats_btn.bind(on_press=self.show_worker_stats)
+        export_pdf_btn.bind(on_press=self.export_to_pdf)
+        reset_btn.bind(on_press=self.confirm_reset_schedule)  # New binding
 
         button_layout.add_widget(save_btn)
         button_layout.add_widget(export_txt_btn)
-        button_layout.add_widget(export_pdf_btn)  # Add new button
-        button_layout.add_widget(stats_btn)
+        button_layout.add_widget(export_pdf_btn)
+        button_layout.add_widget(reset_btn)  # Changed from stats_btn
         self.layout.add_widget(button_layout)
-    
+
         # Year navigation
         year_nav = BoxLayout(orientation='horizontal', size_hint_y=0.1)
         prev_year = Button(text='<<', size_hint_x=0.2)
         next_year = Button(text='>>', size_hint_x=0.2)
         self.year_label = Label(text='', size_hint_x=0.6)
-    
+
         prev_year.bind(on_press=self.previous_year)
         next_year.bind(on_press=self.next_year)
-    
+
         year_nav.add_widget(prev_year)
         year_nav.add_widget(self.year_label)
         year_nav.add_widget(next_year)
         self.layout.add_widget(year_nav)
-    
+
         # Add Today button
         today_btn = Button(text='Today', size_hint_x=0.2)
         today_btn.bind(on_press=self.go_to_today)
         header.add_widget(today_btn)
-    
+
         self.add_widget(self.layout)
         self.current_date = None
         self.schedule = {}
@@ -631,9 +633,9 @@ class CalendarViewScreen(Screen):
         for worker, data in sorted(stats.items()):
             worker_stats = (
                 f"Worker {worker}:\n"
-                f"  Total Shifts: {data['total_shifts']}\n"
-                f"  Weekend Shifts: {data['weekends']}\n"
-                f"  Holiday Shifts: {data['holidays']}\n"
+                f"  Total Shifts: {data['nº de guardias']}\n"
+                f"  Weekend Shifts: {data['Findes']}\n"
+                f"  Holiday Shifts: {data['Festivos']}\n"
             )
             content.add_widget(Label(text=worker_stats))
     
@@ -918,30 +920,123 @@ class CalendarViewScreen(Screen):
                          size_hint=(None, None), size=(400, 200))
             popup.open()
 
-    def show_summary(scheduler):
-        """Display summary of the schedule"""
-        print("\nSchedule Summary:")
-        print("-" * 40)
-    
-        # Show existing summary statistics
-        for worker in scheduler.workers_data:
-            worker_id = worker['id']
-            total_shifts = len(scheduler.worker_assignments[worker_id])
-            weekend_shifts = len(scheduler.worker_weekends[worker_id])
-            print(f"Worker {worker_id}:")
-            print(f"  Total shifts: {total_shifts}")
-            print(f"  Weekend shifts: {weekend_shifts}")
-            print(f"  Work percentage: {worker.get('work_percentage', 100)}%")
-            print()
-    
-        # Export statistics
+    # Fix for the CalendarViewScreen Summary button
+
+    def show_summary(self):
+        """
+        Generate and show a summary of the current schedule
+        """
         try:
-            report_file = scheduler.export_stats(format='txt')
-            print(f"\nDetailed statistics have been exported to: {report_file}")
+            # Get the schedule data
+            if not hasattr(self, 'scheduler') or not self.scheduler:
+                messagebox.showerror("Error", "No schedule data available")
+                return
+        
+            # Create a summary to display and also prepare PDF data
+            stats = self.scheduler.stats.calculate_statistics()
+            summary_data = self.prepare_summary_data(stats)
+        
+            # Display summary in a dialog
+            self.display_summary_dialog(summary_data)
+        
+            # Ask if user wants a PDF
+            if messagebox.askyesno("Export PDF", "Do you want to export the summary as PDF?"):
+                self.export_summary_pdf(summary_data)
+            
         except Exception as e:
-            print(f"\nWarning: Could not export statistics: {str(e)}")
-        finally:
-            print("\nSummary display completed.")
+            logging.error(f"Failed to show summary: {str(e)}", exc_info=True)
+            messagebox.showerror("Error", f"Failed to show summary: {str(e)}")
+
+    def prepare_summary_data(self, stats):
+        """
+        Prepare summary data in a structured way for display and PDF export
+        """
+        summary_data = {
+            'workers': {},
+            'totals': {
+                'total_shifts': 0,
+                'filled_shifts': 0,
+                'weekend_shifts': 0,
+                'last_post_shifts': 0
+            }
+        }
+    
+        # Process worker statistics
+        for worker_id, worker_stats in stats.get('workers', {}).items():
+            # Safeguard against None values
+            worker_name = worker_stats.get('name', worker_id) or worker_id
+            total_shifts = worker_stats.get('total_shifts', 0) or 0
+            weekend_shifts = worker_stats.get('weekend_shifts', 0) or 0
+            weekday_shifts = worker_stats.get('weekday_shifts', 0) or 0
+            target_shifts = worker_stats.get('target_shifts', 0) or 0
+        
+            # Get post distribution (especially last post)
+            post_distribution = worker_stats.get('post_distribution', {})
+            last_post = max(post_distribution.keys()) if post_distribution else 0
+            last_post_shifts = post_distribution.get(last_post, 0) or 0
+        
+            # Store worker data
+            summary_data['workers'][worker_id] = {
+                'name': worker_name,
+                'total_shifts': total_shifts,
+                'weekend_shifts': weekend_shifts,
+                'weekday_shifts': weekday_shifts,
+                'target_shifts': target_shifts,
+                'last_post_shifts': last_post_shifts,
+                'post_distribution': post_distribution
+            }
+        
+            # Update totals
+            summary_data['totals']['total_shifts'] += total_shifts
+            summary_data['totals']['filled_shifts'] += total_shifts
+            summary_data['totals']['weekend_shifts'] += weekend_shifts
+            summary_data['totals']['last_post_shifts'] += last_post_shifts
+    
+        return summary_data
+
+    def display_summary_dialog(self, summary_data):
+        """
+        Display the summary data in a dialog window
+        """
+        # Create a new top-level window
+        summary_window = tk.Toplevel(self.master)
+        summary_window.title("Schedule Summary")
+        summary_window.geometry("800x600")
+    
+        # Create a frame with scrollbar
+        frame = tk.Frame(summary_window)
+        frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+    
+        # Create scrollable text widget
+        text = tk.Text(frame, wrap=tk.WORD, padx=10, pady=10)
+        scrollbar = tk.Scrollbar(frame, command=text.yview)
+        text.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    
+        # Insert summary text
+        text.insert(tk.END, "SCHEDULE SUMMARY\n\n")
+        text.insert(tk.END, f"Total Workers: {len(summary_data['workers'])}\n")
+        text.insert(tk.END, f"Total Shifts: {summary_data['totals']['total_shifts']}\n")
+        text.insert(tk.END, f"Weekend Shifts: {summary_data['totals']['weekend_shifts']}\n")
+        text.insert(tk.END, f"Last Post Shifts: {summary_data['totals']['last_post_shifts']}\n\n")
+    
+        # Worker details
+        text.insert(tk.END, "WORKER DETAILS\n\n")
+    
+        # Sort workers by name
+        sorted_workers = sorted(summary_data['workers'].items(), 
+                               key=lambda x: x[1]['name'])
+    
+        for worker_id, data in sorted_workers:
+            text.insert(tk.END, f"Worker: {data['name']} ({worker_id})\n")
+            text.insert(tk.END, f"  Total Shifts: {data['total_shifts']} (Target: {data['target_shifts']})\n")
+            text.insert(tk.END, f"  Weekend Shifts: {data['weekend_shifts']}\n")
+            text.insert(tk.END, f"  Last Post Shifts: {data['last_post_shifts']}\n")
+            text.insert(tk.END, "\n")
+    
+        # Make the text widget read-only
+        text.configure(state=tk.DISABLED)
 
     def show_month_summary(self, instance):
         """Display a summary of the current month's schedule"""
@@ -949,132 +1044,408 @@ class CalendarViewScreen(Screen):
             if not self.current_date:
                 return
             
-            # Create the content layout
-            content = BoxLayout(orientation='vertical', padding=10, spacing=5)
+            app = App.get_running_app()
         
-            # Month header
-            month_label = Label(
-                text=f"Summary for {self.current_date.strftime('%B %Y')}",
-                size_hint_y=None,
-                height=40,
-                bold=True
-            )
-            content.add_widget(month_label)
+            # Get schedule data
+            schedule = app.schedule_config.get('schedule', {})
+            workers_data = app.schedule_config.get('workers_data', [])
+            num_shifts = app.schedule_config.get('num_shifts', 0)
         
-            # Calculate statistics
+            # Calculate basic statistics for this month
             month_stats = {
                 'total_shifts': 0,
                 'workers': {},
                 'weekend_shifts': 0,
-                'holiday_shifts': 0
+                'last_post_shifts': 0,
+                'posts': {i: 0 for i in range(num_shifts)},
+                'worker_shifts': {}  # Dictionary to store shifts by worker
             }
         
-            # Collect data for the current month
-            for date, workers in self.schedule.items():
+            # Get data for the current month
+            for date, workers in schedule.items():
                 if date.year == self.current_date.year and date.month == self.current_date.month:
                     month_stats['total_shifts'] += len(workers)
                 
-                    # Count worker shifts
-                    for worker in workers:
-                        if worker not in month_stats['workers']:
-                            month_stats['workers'][worker] = {
+                    # Count per worker
+                    for i, worker_id in enumerate(workers):
+                        if worker_id is None:
+                            continue
+                        
+                        if worker_id not in month_stats['workers']:
+                            month_stats['workers'][worker_id] = {
                                 'total': 0,
-                                'weekends': 0,
-                                'holidays': 0
+                                'weekends': 0, 
+                                'last_post': 0
                             }
-                        month_stats['workers'][worker]['total'] += 1
+                    
+                        if worker_id not in month_stats['worker_shifts']:
+                            month_stats['worker_shifts'][worker_id] = []
+                            
+                        # Add this shift to worker's shifts list
+                        month_stats['worker_shifts'][worker_id].append({
+                            'date': date,
+                            'day': date.strftime('%A'),
+                            'post': i + 1,
+                            'is_weekend': date.weekday() >= 5,
+                            'is_holiday': date in app.schedule_config.get('holidays', [])
+                        })
+                    
+                        month_stats['workers'][worker_id]['total'] += 1
+                    
+                        # Count post distribution
+                        if i < num_shifts:
+                            month_stats['posts'][i] += 1
+                        
+                            # Count last post assignments
+                            if i == num_shifts - 1:
+                                month_stats['last_post_shifts'] += 1
+                                month_stats['workers'][worker_id]['last_post'] += 1
                     
                         # Count weekend shifts
-                        if date.weekday() >= 5:
+                        if date.weekday() >= 5:  # Saturday or Sunday
                             month_stats['weekend_shifts'] += 1
-                            month_stats['workers'][worker]['weekends'] += 1
-                    
-                        # Count holiday shifts
-                        app = App.get_running_app()
-                        if date in app.schedule_config.get('holidays', []):
-                            month_stats['holiday_shifts'] += 1
-                            month_stats['workers'][worker]['holidays'] += 1
-        
-            # Create scrollable view for statistics
-            scroll = ScrollView(size_hint_y=None, height=300)
-            stats_layout = GridLayout(
-                cols=1,
-                spacing=5,
-                size_hint_y=None,
-                padding=5
-            )
-            stats_layout.bind(minimum_height=stats_layout.setter('height'))
-        
-            # Add general statistics
-            stats_layout.add_widget(Label(
-                text=f"Total Shifts: {month_stats['total_shifts']}",
-                size_hint_y=None,
-                height=30
-            ))
-            stats_layout.add_widget(Label(
-                text=f"Weekend Shifts: {month_stats['weekend_shifts']}",
-                size_hint_y=None,
-                height=30
-            ))
-            stats_layout.add_widget(Label(
-                text=f"Holiday Shifts: {month_stats['holiday_shifts']}",
-                size_hint_y=None,
-                height=30
-            ))
-        
-            # Add separator
-            stats_layout.add_widget(Label(
-                text="Worker Details:",
-                size_hint_y=None,
-                height=40,
-                bold=True
-            ))
-        
-            # Add per-worker statistics
-            for worker, stats in sorted(month_stats['workers'].items()):
-                worker_stats = (
-                    f"Worker {worker}:\n"
-                    f"  Total: {stats['total']}\n"
-                    f"  Weekends: {stats['weekends']}\n"
-                    f"  Holidays: {stats['holidays']}"
-                )
-                stats_layout.add_widget(Label(
-                    text=worker_stats,
-                    size_hint_y=None,
-                    height=100,
-                    halign='left'
-                ))
-        
-            scroll.add_widget(stats_layout)
-            content.add_widget(scroll)
-        
-            # Add close button
-            close_button = Button(
-                text='Close',
-                size_hint_y=None,
-                height=40
-            )
-            content.add_widget(close_button)
-        
-            # Create and show popup
-            popup = Popup(
-                title='Monthly Summary',
-                content=content,
-                size_hint=(None, None),
-                size=(400, 500)
-            )
+                            month_stats['workers'][worker_id]['weekends'] += 1
             
-            # Bind close button
-            close_button.bind(on_press=popup.dismiss)
-        
-            popup.open()
-        
+            # Create a PDF report
+            if self.display_summary_dialog(month_stats):
+                self.export_summary_pdf(month_stats)
+            
         except Exception as e:
             popup = Popup(title='Error',
                          content=Label(text=f'Failed to show summary: {str(e)}'),
                          size_hint=(None, None), size=(400, 200))
             popup.open()
+            logging.error(f"Summary error: {str(e)}", exc_info=True)
 
+    def display_summary_dialog(self, month_stats):
+        """
+        Display the detailed summary dialog with shift listings and ask if user wants to export PDF
+        Returns True if user wants PDF
+        """
+        # Create the content layout
+        content = BoxLayout(orientation='vertical', padding=10, spacing=10)
+    
+        # Summary scroll view
+        scroll = ScrollView(size_hint=(1, 0.8))
+        summary_layout = GridLayout(
+            cols=1, 
+            spacing=10, 
+            size_hint_y=None,
+            padding=[10, 10]
+        )
+        summary_layout.bind(minimum_height=summary_layout.setter('height'))
+    
+        # Month title
+        month_title = Label(
+            text=f"Summary for {self.current_date.strftime('%B %Y')}",
+            size_hint_y=None,
+            height=40,
+            bold=True
+        )
+        summary_layout.add_widget(month_title)
+    
+        # General stats
+        stats_box = BoxLayout(
+            orientation='vertical',
+            size_hint_y=None,
+            height=120,
+            padding=[5, 5]
+        )
+    
+        stats_box.add_widget(Label(
+            text=f"Total Shifts: {month_stats['total_shifts']}",
+            size_hint_y=None,
+            height=30,
+            halign='left'
+        ))
+    
+        stats_box.add_widget(Label(
+            text=f"Weekend Shifts: {month_stats['weekend_shifts']}",
+            size_hint_y=None,
+            height=30,
+            halign='left'
+        ))
+    
+        stats_box.add_widget(Label(
+            text=f"Last Post Shifts: {month_stats['last_post_shifts']}",
+            size_hint_y=None,
+            height=30,
+            halign='left'
+        ))
+    
+        summary_layout.add_widget(stats_box)
+    
+        # Worker details header
+        worker_header = Label(
+            text="Worker Details:",
+            size_hint_y=None,
+            height=40,
+            bold=True
+        )
+        summary_layout.add_widget(worker_header)
+    
+        # Add worker details with shift listings
+        for worker_id, stats in sorted(month_stats['workers'].items()):
+            # Create a container for each worker
+            worker_box = BoxLayout(
+                orientation='vertical',
+                size_hint_y=None,
+                padding=[5, 10],
+                spacing=5
+            )
+        
+            # Calculate height based on number of shifts (min 120px, 30px per shift)
+            worker_shifts = month_stats['worker_shifts'].get(worker_id, [])
+            height = max(120, 60 + (len(worker_shifts) * 30))
+            worker_box.height = height
+        
+            # Worker summary
+            worker_box.add_widget(Label(
+                text=f"Worker {worker_id}:",
+                size_hint_y=None,
+                height=30,
+                bold=True,
+                halign='left'
+            ))
+        
+            worker_box.add_widget(Label(
+                text=f"Total: {stats['total']} | Weekends: {stats['weekends']} | Last Post: {stats['last_post']}",
+                size_hint_y=None,
+                height=30,
+                halign='left'
+            ))
+        
+            # List of shifts header
+            worker_box.add_widget(Label(
+                text="Assigned Shifts:",
+                size_hint_y=None,
+                height=30,
+                halign='left'
+            ))
+        
+            # Display each shift
+            for shift in sorted(worker_shifts, key=lambda x: x['date']):
+                date_str = shift['date'].strftime('%d-%m-%Y')
+                post_str = f"Post {shift['post']}"
+                day_type = ""
+                if shift['is_holiday']:
+                    day_type = " [HOLIDAY]"
+                elif shift['is_weekend']:
+                    day_type = " [WEEKEND]"
+                
+                shift_label = Label(
+                    text=f"• {date_str} ({shift['day']}){day_type}: {post_str}",
+                    size_hint_y=None,
+                    height=30,
+                    halign='left'
+                )
+                shift_label.bind(size=shift_label.setter('text_size'))
+                worker_box.add_widget(shift_label)
+                
+            # Add separator
+            separator = BoxLayout(
+                size_hint_y=None,
+                height=1
+            )
+            with separator.canvas:
+                from kivy.graphics import Color, Rectangle
+                Color(0.7, 0.7, 0.7, 1)  # Light gray
+                Rectangle(pos=separator.pos, size=separator.size)
+            
+            # Add worker box and separator to layout
+            summary_layout.add_widget(worker_box)
+            summary_layout.add_widget(separator)
+    
+        scroll.add_widget(summary_layout)
+        content.add_widget(scroll)
+    
+        # Button layout
+        button_layout = BoxLayout(
+            orientation='horizontal', 
+            size_hint_y=0.1,
+            spacing=10
+        )
+    
+        pdf_button = Button(text='Export PDF')
+        close_button = Button(text='Close')
+    
+        button_layout.add_widget(pdf_button)
+        button_layout.add_widget(close_button)
+        content.add_widget(button_layout)
+    
+        # Create popup
+        popup = Popup(
+            title='Monthly Summary',
+            content=content,
+            size_hint=(0.9, 0.9),
+            auto_dismiss=False
+        )
+    
+        # Store user's choice
+        user_wants_pdf = [False]
+    
+        def on_pdf(instance):
+            user_wants_pdf[0] = True
+            popup.dismiss()
+        
+        def on_close(instance):
+            popup.dismiss()
+    
+        pdf_button.bind(on_press=on_pdf)
+        close_button.bind(on_press=on_close)
+    
+        # Show popup and wait for it to close
+        popup.open()
+    
+        # Return user's choice
+        return user_wants_pdf[0]
+
+    def export_summary_pdf(self, month_stats):
+        """Export a detailed summary with shift listings as a PDF file"""
+        try:
+            app = App.get_running_app()
+            month_name = self.current_date.strftime('%B_%Y')
+        
+            # Create the exporter that we know works
+            exporter = PDFExporter(app.schedule_config)
+        
+            # Create a custom PDF for the summary using the exporter's functionality
+            filename = f"summary_{month_name}.pdf"
+        
+            # Use the same reportlab imports that work in the PDFExporter class
+            from reportlab.lib.pagesizes import letter
+            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+            from reportlab.lib.styles import getSampleStyleSheet
+            from reportlab.lib import colors
+        
+            # Create document using the same approach as in PDFExporter
+            doc = SimpleDocTemplate(
+                filename,
+                pagesize=letter,
+                rightMargin=30,
+                leftMargin=30,
+                topMargin=30,
+                bottomMargin=30
+            )    
+        
+            # Get styles from the exporter if possible, or create new ones
+            styles = getSampleStyleSheet()
+        
+            # Prepare PDF content
+            story = []
+        
+            # Add title (using same title style as in PDFExporter)
+            title_style = styles['Heading1']
+            title = Paragraph(f"Summary for {month_name}", title_style)
+            story.append(title)
+            story.append(Spacer(1, 20))
+        
+            # Add overall statistics
+            stats_title = Paragraph("Overall Statistics", styles['Heading2'])
+            story.append(stats_title)
+            story.append(Spacer(1, 10))
+        
+            # Create statistics table
+            stats_data = [
+                ["Total Workers", str(len(month_stats['workers']))],
+                ["Total Shifts", str(month_stats['total_shifts'])],
+                ["Weekend Shifts", str(month_stats['weekend_shifts'])],
+                ["Last Post Shifts", str(month_stats['last_post_shifts'])]
+            ]
+        
+            stats_table = Table(stats_data, colWidths=[200, 100])
+            stats_table.setStyle(TableStyle([
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ]))
+            story.append(stats_table)
+            story.append(Spacer(1, 20))
+        
+            # Add worker details
+            worker_title = Paragraph("Worker Details", styles['Heading2'])
+            story.append(worker_title)
+            story.append(Spacer(1, 10))
+        
+            # Add each worker's information
+            for worker_id, stats in sorted(month_stats['workers'].items()):
+                # Worker header
+                worker_header = Paragraph(f"Worker {worker_id}", styles['Heading3'])
+                story.append(worker_header)
+                story.append(Spacer(1, 5))
+            
+                # Worker statistics
+                worker_stats = [
+                    ["Total Shifts", str(stats['total'])],
+                    ["Weekend Shifts", str(stats['weekends'])],
+                    ["Last Post Shifts", str(stats['last_post'])]
+                ]
+            
+                worker_table = Table(worker_stats, colWidths=[150, 100])
+                worker_table.setStyle(TableStyle([
+                    ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ]))
+                story.append(worker_table)
+                story.append(Spacer(1, 10))
+            
+                # If we have shift data, show it
+                worker_shifts = month_stats['worker_shifts'].get(worker_id, [])
+                if worker_shifts:
+                    shift_title = Paragraph("Assigned Shifts:", styles['Normal'])
+                    story.append(shift_title)
+                    story.append(Spacer(1, 5))
+                
+                    # Create shifts table
+                    shifts_data = [["Date", "Day", "Post", "Type"]]
+                
+                    for shift in sorted(worker_shifts, key=lambda x: x['date']):
+                        date_str = shift['date'].strftime('%d-%m-%Y')
+                        day_str = shift['day']
+                        post_str = f"Post {shift['post']}"
+                    
+                        day_type = "Regular"
+                        if shift['is_holiday']:
+                            day_type = "HOLIDAY"
+                        elif shift['is_weekend']:
+                            day_type = "WEEKEND"
+                    
+                        shifts_data.append([date_str, day_str, post_str, day_type])
+                
+                    shifts_table = Table(shifts_data, colWidths=[80, 80, 60, 80])
+                    shifts_table.setStyle(TableStyle([
+                        ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                        ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+                        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ]))
+                    story.append(shifts_table)
+                else:
+                    story.append(Paragraph("No shifts assigned", styles['Normal']))
+            
+                story.append(Spacer(1, 15))
+        
+            # Build PDF using the same approach as in PDFExporter
+            doc.build(story)
+        
+            # Show success message
+            popup = Popup(
+                title='Success',
+                content=Label(text=f'Summary exported to {filename}'),
+                size_hint=(None, None),
+                size=(400, 200)
+            )
+            popup.open()
+        
+        except Exception as e:
+            # Show error popup
+            popup = Popup(
+                title='Error',
+                content=Label(text=f'Failed to export PDF: {str(e)}'),
+                size_hint=(None, None),
+                size=(400, 200)
+            )
+            popup.open()
+        
     def export_to_pdf(self, instance):
         try:
             app = App.get_running_app()
@@ -1160,6 +1531,105 @@ class CalendarViewScreen(Screen):
                 size=(400, 200)
             )
             popup.open()
+
+    def confirm_reset_schedule(self, instance):
+        """Show confirmation dialog before resetting schedule"""
+        content = BoxLayout(orientation='vertical', padding=10, spacing=10)
+    
+        # Warning message
+        message = Label(
+            text='Are you sure you want to reset the schedule?\n'
+                 'This will clear all assignments and return to setup.',
+            halign='center'
+        )
+        content.add_widget(message)
+    
+        # Button layout
+        button_layout = BoxLayout(
+            orientation='horizontal', 
+            size_hint_y=None,
+            height=40,
+            spacing=10
+        )
+    
+        # Confirm and cancel buttons
+        confirm_btn = Button(text='Yes, Reset')
+        cancel_btn = Button(text='Cancel')
+    
+        button_layout.add_widget(confirm_btn)
+        button_layout.add_widget(cancel_btn)
+        content.add_widget(button_layout)
+    
+        # Create popup
+        popup = Popup(
+            title='Confirm Reset',
+            content=content,
+            size_hint=(None, None),
+            size=(400, 200),
+            auto_dismiss=False
+        )
+    
+        # Define button actions
+        confirm_btn.bind(on_press=lambda x: self.reset_schedule(popup))
+        cancel_btn.bind(on_press=popup.dismiss)
+    
+        popup.open()
+
+    def reset_schedule(self, popup):
+        """Reset the schedule and return to setup screen"""
+        try:
+            app = App.get_running_app()
+        
+            # Keep some basic settings from the current configuration
+            basic_settings = {
+                'start_date': app.schedule_config.get('start_date'),
+                'end_date': app.schedule_config.get('end_date'),
+                'holidays': app.schedule_config.get('holidays', []),
+                'num_workers': app.schedule_config.get('num_workers', 0),
+                'num_shifts': app.schedule_config.get('num_shifts', 0)
+            }
+        
+            # Reset config to just the basic settings
+            app.schedule_config = basic_settings
+        
+            # Clear out the workers_data and schedule
+            app.schedule_config['workers_data'] = []
+            app.schedule_config['schedule'] = {}
+            app.schedule_config['current_worker_index'] = 0
+        
+            # Dismiss the popup
+            popup.dismiss()
+        
+            # Show success message
+            success = Popup(
+                title='Success',
+                content=Label(text='Schedule has been reset.\nReturning to worker details...'),
+                size_hint=(None, None),
+                size=(400, 200)
+            )
+            success.open()
+        
+            # Schedule a callback to close the popup and navigate
+            from kivy.clock import Clock
+            Clock.schedule_once(lambda dt: self.navigate_after_reset(success), 2)
+        
+        except Exception as e:
+            # Show error
+            error_popup = Popup(
+                title='Error',
+                content=Label(text=f'Failed to reset: {str(e)}'),
+                size_hint=(None, None),
+                size=(400, 200)
+            )
+            error_popup.open()
+        
+            # Dismiss the confirmation popup
+            popup.dismiss()
+
+    def navigate_after_reset(self, popup):
+        """Navigate to worker details after reset"""
+        popup.dismiss()
+        self.manager.current = 'worker_details'
               
 class ShiftManagerApp(App):
     def __init__(self, **kwargs):

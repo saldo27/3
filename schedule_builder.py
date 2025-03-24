@@ -153,13 +153,14 @@ class ScheduleBuilder:
         Args:
             worker_id: ID of the worker to check
             date: Date to check for incompatibilities
-        
+    
         Returns:
             bool: True if no incompatibilities found, False if incompatibilities exist
         """
         # Get worker data
         worker = next((w for w in self.workers_data if w['id'] == worker_id), None)
         if not worker:
+            logging.debug(f"Worker {worker_id} not found in workers_data")
             return False
     
         # Get incompatible workers
@@ -167,9 +168,16 @@ class ScheduleBuilder:
         if not incompatible_with:
             return True
     
+        # Get workers currently assigned to this date
+        currently_assigned = []
+        if date in self.schedule:
+            # Extract all non-None worker IDs from the schedule for this date
+            currently_assigned = [w for w in self.schedule[date] if w is not None]
+    
         # Check if any incompatible workers are already assigned to this date
         for incompatible_id in incompatible_with:
-            if incompatible_id in self.schedule.get(date, []):
+            if incompatible_id in currently_assigned:
+                logging.debug(f"Worker {worker_id} cannot work with incompatible worker {incompatible_id} already assigned on {date.strftime('%Y-%m-%d')}")
                 return False
     
         return True
@@ -292,6 +300,56 @@ class ScheduleBuilder:
                     self.worker_weekends[worker_id].append(date)
                     self.worker_weekends[worker_id].sort()
 
+    def _verify_no_incompatibilities(self):
+        """
+        Verify that the final schedule doesn't have any incompatibility violations
+        and fix any found violations.
+        """
+        logging.info("Performing final incompatibility verification check")
+    
+        violations_found = 0
+        violations_fixed = 0
+    
+        # Check each date for incompatible worker assignments
+        for date in sorted(self.schedule.keys()):
+            workers_today = [w for w in self.schedule[date] if w is not None]
+        
+            # Process all pairs to find incompatibilities
+            for i in range(len(workers_today)):
+                for j in range(i+1, len(workers_today)):
+                    worker1_id = workers_today[i]
+                    worker2_id = workers_today[j]
+                
+                    # Check if they are incompatible
+                    if self._are_workers_incompatible(worker1_id, worker2_id):
+                        violations_found += 1
+                        logging.warning(f"Final verification found incompatibility violation: {worker1_id} and {worker2_id} on {date.strftime('%Y-%m-%d')}")
+                    
+                        # Find their positions
+                        post1 = self.schedule[date].index(worker1_id)
+                        post2 = self.schedule[date].index(worker2_id)
+                    
+                        # Remove one of the workers (choose the one with more shifts assigned)
+                        w1_shifts = len(self.worker_assignments.get(worker1_id, set()))
+                        w2_shifts = len(self.worker_assignments.get(worker2_id, set()))
+                    
+                        # Remove the worker with more shifts or the second worker if equal
+                        if w1_shifts > w2_shifts:
+                            self.schedule[date][post1] = None
+                            self.worker_assignments[worker1_id].remove(date)
+                            self._update_worker_stats(worker1_id, date, removing=True)
+                            violations_fixed += 1
+                            logging.info(f"Removed worker {worker1_id} from {date.strftime('%Y-%m-%d')} to fix incompatibility")
+                        else:
+                            self.schedule[date][post2] = None
+                            self.worker_assignments[worker2_id].remove(date)
+                            self._update_worker_stats(worker2_id, date, removing=True)
+                            violations_fixed += 1
+                            logging.info(f"Removed worker {worker2_id} from {date.strftime('%Y-%m-%d')} to fix incompatibility")
+    
+        logging.info(f"Final verification: found {violations_found} violations, fixed {violations_fixed}")
+        return violations_fixed > 0
+
     # 4. Worker Assignment Methods
 
     def _can_assign_worker(self, worker_id, date, post):
@@ -327,7 +385,7 @@ class ScheduleBuilder:
         assignments = sorted(self.worker_assignments[worker_id])
         for prev_date in assignments:
             days_between = abs((date - prev_date).days)
-            if days_between < 2:  # Absolute minimum gap
+            if days_between < 3:  # Absolute minimum gap
                 return False
     
         # Check weekend limits
@@ -337,18 +395,18 @@ class ScheduleBuilder:
         # Check if this worker can swap these assignments
         work_percentage = worker.get('work_percentage', 100)
     
-        # Part-time workers need at least 3 days between shifts
+        # Part-time workers need at least 4 days between shifts
         if work_percentage < 100:
             for prev_date in assignments:
                 days_between = abs((date - prev_date).days)
-                if days_between < 3:
+                if days_between < 4:
                     return False
     
         # Check for consecutive week patterns
         for prev_date in assignments:
             days_between = abs((date - prev_date).days)
             # Avoid same day of week in consecutive weeks when possible
-            if days_between in [7, 14, 21] and date.weekday() == prev_date.weekday():
+            if days_between in [7, 14] and date.weekday() == prev_date.weekday():
                 return False
     
         # If we've made it this far, the worker can be assigned
@@ -1286,7 +1344,7 @@ class ScheduleBuilder:
                         violations_found += 1
                         logging.warning(f"Found incompatibility violation: {worker1_id} and {worker2_id} on {date}")
                     
-                    # Try to fix the violation by moving one of the workers
+                        # Try to fix the violation by moving one of the workers
                         # Let's try to move the second worker first
                         if self._try_reassign_worker(worker2_id, date):
                             violations_fixed += 1
@@ -1372,96 +1430,12 @@ class ScheduleBuilder:
     # 7. Backup and Restore Methods
 
     def _backup_best_schedule(self):
-        """Save a backup of the current best schedule"""
-        try:
-            # Debug: log what we're backing up
-            filled_count_before = sum(1 for date in self.schedule for shift in self.schedule[date] if shift is not None)
-            logging.info(f"Creating backup of schedule with {filled_count_before} filled shifts")
-        
-            # Create backups on both self and scheduler
-            # First on scheduler
-            self.scheduler.backup_schedule = {}
-            for date, shifts in self.schedule.items():
-                # Important: make sure we're copying the actual shifts, not just references
-                self.scheduler.backup_schedule[date] = [shift for shift in shifts]
-        
-            # Other scheduler backups
-            self.scheduler.backup_worker_assignments = {}
-            for worker_id, assignments in self.worker_assignments.items():
-                self.scheduler.backup_worker_assignments[worker_id] = set(assignments)
-        
-            # Add other backups that might be needed
-            self.scheduler.backup_worker_posts = {}
-            for worker_id in self.worker_assignments:
-                if worker_id in self.worker_posts:
-                    self.scheduler.backup_worker_posts[worker_id] = set(self.worker_posts[worker_id])
-                else:
-                    self.scheduler.backup_worker_posts[worker_id] = set()
-        
-            self.scheduler.backup_worker_weekdays = {}
-            for worker_id in self.worker_assignments:
-                if worker_id in self.worker_weekdays:
-                    self.scheduler.backup_worker_weekdays[worker_id] = dict(self.worker_weekdays[worker_id])
-                else:
-                    self.scheduler.backup_worker_weekdays[worker_id] = {}
-        
-            self.scheduler.backup_worker_weekends = {}
-            for worker_id in self.worker_assignments:
-                if worker_id in self.worker_weekends:
-                    self.scheduler.backup_worker_weekends[worker_id] = list(self.worker_weekends[worker_id])
-                else:
-                    self.scheduler.backup_worker_weekends[worker_id] = []
-        
-            # Now backup on self as well
-            self.backup_schedule = {}
-            for date, shifts in self.schedule.items():
-                self.backup_schedule[date] = [shift for shift in shifts]
-        
-            self.backup_worker_assignments = {}
-            for worker_id, assignments in self.worker_assignments.items():
-                self.backup_worker_assignments[worker_id] = set(assignments)
-        
-            # Verify backups were made correctly
-            filled_count_after = sum(1 for date in self.scheduler.backup_schedule 
-                                  for shift in self.scheduler.backup_schedule[date] if shift is not None)
-        
-            logging.info(f"Backed up current schedule with {filled_count_after} filled shifts")
-        except Exception as e:
-            logging.error(f"Error creating backup: {str(e)}", exc_info=True)
+        """Save a backup of the current best schedule by delegating to scheduler"""
+        return self.scheduler._backup_best_schedule()
     
     def _restore_best_schedule(self):
-        """Restore from backup of the best schedule"""
-        try:
-            if hasattr(self, 'backup_schedule') and self.backup_schedule:
-                # Use local backup first if available
-                self.schedule = {}
-                for date, shifts in self.backup_schedule.items():
-                    self.schedule[date] = shifts.copy() if shifts else []
-                
-                self.worker_assignments = {}
-                for worker_id, assignments in self.backup_worker_assignments.items():
-                    self.worker_assignments[worker_id] = assignments.copy()
-                
-                logging.info(f"Restored schedule from local backup with {sum(1 for shifts in self.schedule.values() for w in shifts if w is not None)} shifts")
-                return True
-            elif hasattr(self.scheduler, 'backup_schedule') and self.scheduler.backup_schedule:
-                # Fall back to scheduler's backup
-                self.schedule = {}
-                for date, shifts in self.scheduler.backup_schedule.items():
-                    self.schedule[date] = shifts.copy() if shifts else []
-                
-                self.worker_assignments = {}
-                for worker_id, assignments in self.scheduler.backup_worker_assignments.items():
-                    self.worker_assignments[worker_id] = assignments.copy()
-                
-                logging.info(f"Restored schedule from scheduler backup with {sum(1 for shifts in self.schedule.values() for w in shifts if w is not None)} shifts")
-                return True
-            else:
-                logging.warning("No backup schedule to restore")
-                return False
-        except Exception as e:
-            logging.error(f"Error restoring schedule: {str(e)}", exc_info=True)
-            return False
+        """Restore backup by delegating to scheduler"""
+        return self.scheduler._restore_best_schedule()
 
     def _save_current_as_best(self):
         """Save current schedule as the best"""

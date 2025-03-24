@@ -421,6 +421,53 @@ class Scheduler:
             worker['target_shifts'] += 1
             logging.info(f"Redistributed 1 shift to worker {worker['id']}")
 
+    def _reconcile_schedule_tracking(self):
+        """
+        Reconciles worker_assignments tracking with the actual schedule
+        to fix any inconsistencies before validation.
+        """
+        logging.info("Reconciling worker assignments tracking with schedule...")
+    
+        try:
+            # Build tracking from scratch based on current schedule
+            new_worker_assignments = {}
+            for worker in self.workers_data:
+                new_worker_assignments[worker['id']] = set()
+            
+            # Go through the schedule and rebuild tracking
+            for date, shifts in self.schedule.items():
+                for shift_idx, worker_id in enumerate(shifts):
+                    if worker_id is not None:
+                        if worker_id not in new_worker_assignments:
+                            new_worker_assignments[worker_id] = set()
+                        new_worker_assignments[worker_id].add(date)
+        
+            # Find and log discrepancies
+            total_discrepancies = 0
+            for worker_id, assignments in self.worker_assignments.items():
+                if worker_id not in new_worker_assignments:
+                    new_worker_assignments[worker_id] = set()
+                
+                extra_dates = assignments - new_worker_assignments[worker_id]
+                missing_dates = new_worker_assignments[worker_id] - assignments
+            
+                if extra_dates:
+                    logging.debug(f"Worker {worker_id} has {len(extra_dates)} tracked dates not in schedule")
+                    total_discrepancies += len(extra_dates)
+                
+                if missing_dates:
+                    logging.debug(f"Worker {worker_id} has {len(missing_dates)} schedule dates not tracked")
+                    total_discrepancies += len(missing_dates)
+        
+            # Replace with corrected tracking
+            self.worker_assignments = new_worker_assignments
+        
+            logging.info(f"Reconciliation complete: Fixed {total_discrepancies} tracking discrepancies")
+            return True
+        except Exception as e:
+            logging.error(f"Error reconciling schedule tracking: {str(e)}", exc_info=True)
+            return False
+
     def _ensure_data_integrity(self):
         """
         Ensure all data structures are consistent before schedule generation
@@ -592,8 +639,12 @@ class Scheduler:
 
     def _assign_workers_simple(self):
         """
-        Simple method to directly assign workers to shifts based purely on targets.
-        This bypasses the complex constraints to ensure we get a basic schedule working.
+        Simple method to directly assign workers to shifts based on targets and ensuring
+        all constraints are properly respected:
+        - Minimum 2 days off between shifts (3+ days between assignments)
+        - Special Friday-Monday constraint
+        - 7/14 day pattern avoidance
+        - Worker incompatibility checking
         """
         logging.info("Using simplified assignment method to ensure schedule population")
     
@@ -611,7 +662,7 @@ class Scheduler:
             self.workers_data, 
             key=lambda w: worker_targets.get(w['id'], 0),
             reverse=True
-        )
+        )    
     
         # 3. Go through each date and assign workers
         for date in all_dates:
@@ -620,63 +671,99 @@ class Scheduler:
                 # If the shift is already assigned, skip it
                 if date in self.schedule and len(self.schedule[date]) > post and self.schedule[date][post] is not None:
                     continue
-                
+            
                 # Find the best worker for this shift
                 best_worker = None
             
+                # Get currently assigned workers for this date
+                currently_assigned = []
+                if date in self.schedule:
+                    currently_assigned = [w for w in self.schedule[date] if w is not None]
+        
                 # Try each worker in priority order
                 for worker in workers_by_priority:
                     worker_id = worker['id']
-                
+            
                     # Skip if worker is already assigned to this date
-                    if date in self.schedule and worker_id in self.schedule[date]:
+                    if worker_id in currently_assigned:
                         continue
-                    
+                
                     # Skip if worker has reached their target
                     if worker_assignment_counts[worker_id] >= worker_targets[worker_id]:
                         continue
-                    
-                    # Skip if too close to existing assignment
+                
+                    # IMPORTANT: Check for minimum gap of 2 days off (3+ days between assignments)
                     too_close = False
                     for assigned_date in self.worker_assignments.get(worker_id, set()):
-                        if abs((date - assigned_date).days) < 2:  # Minimum 2 day gap
+                        days_difference = abs((date - assigned_date).days)
+                    
+                        # We need at least 2 days off, so 3+ days between assignments
+                        if days_difference < 3:  # THIS IS THE KEY CHANGE
                             too_close = True
                             break
-                        
+                    
+                        # Special case: Friday-Monday (needs 3 days off, so 4+ days between)
+                        # This is handled by the general case above (< 3), but keeping for clarity
+                        if days_difference == 3:
+                            if ((date.weekday() == 0 and assigned_date.weekday() == 4) or 
+                                (date.weekday() == 4 and assigned_date.weekday() == 0)):
+                                too_close = True
+                                break
+                    
+                        # Check for 7 or 14 day patterns (same day of week)
+                        if days_difference == 7 or days_difference == 14:
+                            too_close = True
+                            break
+                
                     if too_close:
                         continue
-                    
+                
+                    # Check for worker incompatibilities
+                    incompatible_with = worker.get('incompatible_with', [])
+                    if incompatible_with:
+                        has_conflict = False
+                        for incompatible_id in incompatible_with:
+                            if incompatible_id in currently_assigned:
+                                has_conflict = True
+                                break
+    
+                        if has_conflict:
+                            continue
+                
                     # This worker is a good candidate
                     best_worker = worker
                     break
-                
+            
                 # If we found a suitable worker, assign them
                 if best_worker:
                     worker_id = best_worker['id']
-                
+            
                     # Make sure the schedule list exists and has the right size
                     if date not in self.schedule:
                         self.schedule[date] = []
-                    
+                
                     while len(self.schedule[date]) <= post:
                         self.schedule[date].append(None)
-                    
+                
                     # Assign the worker
                     self.schedule[date][post] = worker_id
-                
+            
                     # Update tracking data
                     self._update_tracking_data(worker_id, date, post)
-                
+            
                     # Update the assignment count
                     worker_assignment_counts[worker_id] += 1
                 
+                    # Update currently_assigned for this date
+                    currently_assigned.append(worker_id)
+            
                     # Log the assignment
                     logging.info(f"Assigned worker {worker_id} to {date.strftime('%Y-%m-%d')}, post {post}")
                 else:
                     # No suitable worker found, leave unassigned
                     if date not in self.schedule:
                         self.schedule[date] = []
-                    
+                
                     while len(self.schedule[date]) <= post:
                         self.schedule[date].append(None)
                     
@@ -689,6 +776,339 @@ class Scheduler:
     
         return total_assigned > 0
 
+    def _assign_mixed_strategy(self):
+        """
+        Try multiple assignment strategies and choose the best result.
+        """
+        logging.info("Using mixed strategy approach to generate optimal schedule")
+    
+        try:
+            # Strategy 1: Simple assignment
+            self._backup_best_schedule()  # Save current state
+            success1 = self._assign_workers_simple()
+        
+            # Ensure tracking is consistent
+            self._reconcile_schedule_tracking()
+        
+            coverage1 = self._calculate_coverage() if success1 else 0
+            post_rotation1 = self._calculate_post_rotation()['overall_score'] if success1 else 0
+        
+            # Create deep copies of the simple assignment result
+            simple_schedule = {}
+            for date, shifts in self.schedule.items():
+                simple_schedule[date] = shifts.copy() if shifts else []
+            
+            simple_assignments = {}
+            for worker_id, assignments in self.worker_assignments.items():
+                simple_assignments[worker_id] = set(assignments)
+        
+            logging.info(f"Simple assignment strategy: {coverage1:.1f}% coverage, {post_rotation1:.1f}% rotation")
+        
+            # Strategy 2: Cadence-based assignment
+            self._restore_best_schedule()  # Restore to original state
+            try:
+                success2 = self._assign_workers_cadence()
+            
+                # Ensure tracking is consistent
+                self._reconcile_schedule_tracking()
+            
+                coverage2 = self._calculate_coverage() if success2 else 0
+                post_rotation2 = self._calculate_post_rotation()['overall_score'] if success2 else 0
+            
+                # Create deep copies of the cadence result
+                cadence_schedule = {}
+                for date, shifts in self.schedule.items():
+                    cadence_schedule[date] = shifts.copy() if shifts else []
+                
+                cadence_assignments = {}
+                for worker_id, assignments in self.worker_assignments.items():
+                    cadence_assignments[worker_id] = set(assignments)
+                
+                logging.info(f"Cadence assignment strategy: {coverage2:.1f}% coverage, {post_rotation2:.1f}% rotation")
+            except Exception as e:
+                logging.error(f"Error in cadence assignment: {str(e)}", exc_info=True)
+                # Default to simple assignment if cadence fails
+                success2 = False
+                coverage2 = 0
+                post_rotation2 = 0
+        
+            # Compare results
+            logging.info(f"Strategy comparison: Simple ({coverage1:.1f}% coverage, {post_rotation1:.1f}% rotation) vs "
+                        f"Cadence ({coverage2:.1f}% coverage, {post_rotation2:.1f}% rotation)")
+        
+            # Choose the better strategy based on combined score (coverage is more important)
+            score1 = coverage1 * 0.7 + post_rotation1 * 0.3
+            score2 = coverage2 * 0.7 + post_rotation2 * 0.3
+        
+            if score1 >= score2 or not success2:
+                # Use simple assignment results
+                self.schedule = simple_schedule
+                self.worker_assignments = simple_assignments
+                logging.info(f"Selected simple assignment strategy (score: {score1:.1f})")
+            else:
+                # Use cadence assignment results
+                self.schedule = cadence_schedule
+                self.worker_assignments = cadence_assignments
+                logging.info(f"Selected cadence assignment strategy (score: {score2:.1f})")
+        
+            # Final reconciliation to ensure consistency
+            self._reconcile_schedule_tracking()
+        
+            # Final coverage calculation
+            final_coverage = self._calculate_coverage()
+            logging.info(f"Final mixed strategy coverage: {final_coverage:.1f}%")
+        
+            return final_coverage > 0
+        
+        except Exception as e:
+            logging.error(f"Error in mixed strategy assignment: {str(e)}", exc_info=True)
+            # Fall back to simple assignment if mixed strategy fails
+            return self._assign_workers_simple()
+
+    def _check_schedule_constraints(self):
+        """
+        Check the current schedule for constraint violations.
+        Returns a list of violations found.
+        """
+        violations = []
+        
+        try:
+            # Check for minimum rest days violations, Friday-Monday patterns, and weekly patterns
+            for worker in self.workers_data:
+                worker_id = worker['id']
+                if worker_id not in self.worker_assignments:
+                    continue
+            
+                # Sort the worker's assignments by date
+                assigned_dates = sorted(list(self.worker_assignments[worker_id]))
+            
+                # Check all pairs of dates for violations
+                for i, date1 in enumerate(assigned_dates):
+                    for j, date2 in enumerate(assigned_dates):
+                        if i >= j:  # Skip same date or already checked pairs
+                            continue
+                    
+                        days_between = abs((date2 - date1).days)
+                    
+                        # Check for insufficient rest periods (less than 2 days)
+                        if 0 < days_between < 2:
+                            violations.append({
+                                'type': 'min_rest_days',
+                                'worker_id': worker_id,
+                                'date1': date1,
+                                'date2': date2,
+                                'days_between': days_between,
+                                'min_required': 2
+                            })
+                    
+                        # Check for Friday-Monday assignments (special case requiring 3 days)
+                        if days_between == 3:
+                            if ((date1.weekday() == 4 and date2.weekday() == 0) or 
+                                (date1.weekday() == 0 and date2.weekday() == 4)):
+                                violations.append({
+                                    'type': 'friday_monday_pattern',
+                                    'worker_id': worker_id,
+                                    'date1': date1,
+                                    'date2': date2,
+                                    'days_between': days_between
+                                })
+                    
+                        # Check for 7 or 14 day patterns
+                        if days_between == 7 or days_between == 14:
+                            violations.append({
+                                'type': 'weekly_pattern',
+                                'worker_id': worker_id,
+                                'date1': date1,
+                                'date2': date2,
+                                'days_between': days_between
+                            })
+        
+            # Check for incompatibility violations
+            for date in self.schedule.keys():
+                workers_assigned = [w for w in self.schedule.get(date, []) if w is not None]
+            
+                # Check each worker against others for incompatibility
+                for worker_id in workers_assigned:
+                    worker = next((w for w in self.workers_data if w['id'] == worker_id), None)
+                    if not worker:
+                        continue
+                    
+                    incompatible_with = worker.get('incompatible_with', [])
+                    for incompatible_id in incompatible_with:
+                        if incompatible_id in workers_assigned:
+                            violations.append({
+                                'type': 'incompatibility',
+                                'worker_id': worker_id,
+                                'incompatible_id': incompatible_id,
+                                'date': date
+                            })
+        
+            # Log summary of violations
+            if violations:
+                logging.warning(f"Found {len(violations)} constraint violations in schedule")
+                for i, v in enumerate(violations[:5]):  # Log first 5 violations
+                    if v['type'] == 'min_rest_days':
+                        logging.warning(f"Violation {i+1}: Worker {v['worker_id']} has only {v['days_between']} days between shifts on {v['date1']} and {v['date2']} (min required: {v['min_required']})")
+                    elif v['type'] == 'friday_monday_pattern':
+                        logging.warning(f"Violation {i+1}: Worker {v['worker_id']} has Friday-Monday assignment on {v['date1']} and {v['date2']}")
+                    elif v['type'] == 'weekly_pattern':
+                        logging.warning(f"Violation {i+1}: Worker {v['worker_id']} has shifts exactly {v['days_between']} days apart on {v['date1']} and {v['date2']}")
+                    elif v['type'] == 'incompatibility':
+                        logging.warning(f"Violation {i+1}: Incompatible workers {v['worker_id']} and {v['incompatible_id']} are both assigned on {v['date']}")
+                
+                if len(violations) > 5:
+                    logging.warning(f"...and {len(violations) - 5} more violations")
+            
+            return violations
+        except Exception as e:
+            logging.error(f"Error checking schedule constraints: {str(e)}", exc_info=True)
+            return []
+
+    def _is_allowed_assignment(self, worker_id, date, shift_num):
+        """
+        Check if assigning this worker to this date/shift would violate any constraints.
+        Returns True if assignment is allowed, False otherwise.        
+    
+        Enforces:
+        - Minimum 2 days between shifts in general
+        - Special case: No Friday-Monday assignments (require 3 days gap)
+        - No 7 or 14 day patterns
+        - Worker incompatibility constraints
+        """
+        try:
+            # Check if worker is available on this date
+            worker = next((w for w in self.workers_data if w['id'] == worker_id), None)
+            if not worker:
+                return False
+    
+            # Check if worker is already assigned on this date
+            if worker_id in self.worker_assignments and date in self.worker_assignments[worker_id]:
+                return False
+    
+            # Check past assignments for minimum gap and patterns
+            for assigned_date in self.worker_assignments.get(worker_id, set()):
+                days_difference = abs((date - assigned_date).days)
+        
+                # Basic minimum gap check (2 days)
+                if days_difference < 3:  # Changed to 3 for minimum 3-day gap
+                    logging.debug(f"Worker {worker_id} cannot be assigned on {date} due to insufficient rest (needs at least 3 days)")
+                    return False
+                
+                # Special case: Friday-Monday check (requires 3 days gap)
+                # Check if either date is Friday and the other is Monday
+                if days_difference == 3:
+                    # Check if one date is Friday (weekday 4) and the other is Monday (weekday 0)
+                    if ((assigned_date.weekday() == 4 and date.weekday() == 0) or 
+                        (assigned_date.weekday() == 0 and date.weekday() == 4)):
+                        logging.debug(f"Worker {worker_id} cannot be assigned Friday-Monday (needs at least 3 days gap)")
+                        return False
+            
+                # Check 7 or 14 day patterns (to avoid same day of week assignments)
+                if days_difference == 7 or days_difference == 14:
+                    logging.debug(f"Worker {worker_id} cannot be assigned on {date} as it would create a 7 or 14 day pattern")
+                    return False
+        
+            # Check incompatibility constraints using worker data
+            incompatible_with = worker.get('incompatible_with', [])
+            if incompatible_with:
+                # Check if any incompatible worker is already assigned to this date
+                for incompatible_id in incompatible_with:
+                    if date in self.schedule and incompatible_id in self.schedule[date]:
+                        logging.debug(f"Worker {worker_id} cannot work with incompatible worker {incompatible_id} on {date}")
+                        return False
+        
+            # Use the schedule_builder's incompatibility check method
+            if not self.schedule_builder._check_incompatibility(worker_id, date):
+                return False
+    
+            # All checks passed
+            return True
+        except Exception as e:
+            logging.error(f"Error checking assignment constraints: {str(e)}")
+            # Default to not allowing on error
+            return False
+
+    def _fix_constraint_violations(self):
+        """
+        Try to fix constraint violations in the current schedule.
+        Returns True if fixed, False if couldn't fix all.
+        """
+        try:
+            violations = self._check_schedule_constraints()
+            if not violations:
+                return True
+            
+            logging.info(f"Attempting to fix {len(violations)} constraint violations")
+            fixes_made = 0
+        
+            # Fix each violation
+            for violation in violations:
+                if violation['type'] == 'min_rest_days' or violation['type'] == 'weekly_pattern':
+                    # Fix by unassigning one of the shifts
+                    worker_id = violation['worker_id']
+                    date1 = violation['date1']
+                    date2 = violation['date2']
+                
+                    # Decide which date to unassign
+                    # Generally prefer to unassign the later date
+                    date_to_unassign = date2
+                
+                    # Find the shift number for this worker on this date
+                    shift_num = None
+                    if date_to_unassign in self.schedule:
+                        for i, worker in enumerate(self.schedule[date_to_unassign]):
+                            if worker == worker_id:
+                                shift_num = i
+                                break
+                
+                    if shift_num is not None:
+                        # Unassign this worker
+                        self.schedule[date_to_unassign][shift_num] = None
+                        self.worker_assignments[worker_id].remove(date_to_unassign)
+                        violation_type = "rest period" if violation['type'] == 'min_rest_days' else "weekly pattern"
+                        logging.info(f"Fixed {violation_type} violation: Unassigned worker {worker_id} from {date_to_unassign}")
+                        fixes_made += 1
+                
+                elif violation['type'] == 'incompatibility':
+                    # Fix incompatibility by unassigning one of the workers
+                    worker_id = violation['worker_id']
+                    incompatible_id = violation['incompatible_id']
+                    date = violation['date']
+                
+                    # Decide which worker to unassign (prefer the one with more assignments)
+                    w1_assignments = len(self.worker_assignments.get(worker_id, set()))
+                    w2_assignments = len(self.worker_assignments.get(incompatible_id, set()))
+                
+                    worker_to_unassign = worker_id if w1_assignments >= w2_assignments else incompatible_id
+                
+                    # Find the shift number for this worker on this date
+                    shift_num = None
+                    if date in self.schedule:
+                        for i, worker in enumerate(self.schedule[date]):
+                            if worker == worker_to_unassign:
+                                shift_num = i
+                                break
+                
+                    if shift_num is not None:
+                        # Unassign this worker
+                        self.schedule[date][shift_num] = None
+                        self.worker_assignments[worker_to_unassign].remove(date)
+                        logging.info(f"Fixed incompatibility violation: Unassigned worker {worker_to_unassign} from {date}")
+                        fixes_made += 1
+        
+            # Check if we fixed all violations
+            remaining_violations = self._check_schedule_constraints()
+            if remaining_violations:
+                logging.warning(f"After fixing attempts, {len(remaining_violations)} violations still remain")
+                return False
+            else:
+                logging.info(f"Successfully fixed all {fixes_made} constraint violations")
+                return True
+            
+        except Exception as e:
+            logging.error(f"Error fixing constraint violations: {str(e)}", exc_info=True)
+            return False
+        
     def _prepare_worker_data(self):
         """
         Prepare worker data before schedule generation:
@@ -705,7 +1125,7 @@ class Scheduler:
                 worker['work_periods'] = f"{start_str} - {end_str}"
                 logging.info(f"Worker {worker['id']}: Empty work period set to full schedule period")
             
-    def generate_schedule(self, num_attempts=60, allow_feedback_improvement=True, improvement_attempts=30):
+    def generate_schedule(self, num_attempts=90, allow_feedback_improvement=True, improvement_attempts=40):
         """
         Generate the complete schedule using a multi-phase approach to maximize shift coverage
     
@@ -847,20 +1267,20 @@ class Scheduler:
                 if allow_feedback_improvement and best_coverage < 99.9:
                     logging.info("\n=== Starting targeted improvement phase ===")
     
-                    # Add simple assignment if coverage is zero
+                    # Try mixed strategy first
                     if best_coverage == 0:
-                        logging.warning("Zero coverage detected, using simple assignment method")
-                        success = self._assign_workers_simple()
+                        logging.warning("Zero coverage detected, using mixed assignment strategies")
+                        success = self._assign_mixed_strategy()
                         if success:
                             # Recalculate coverage
                             coverage = self._calculate_coverage() 
                             post_rotation_stats = self._calculate_post_rotation()
                             best_coverage = coverage
                             best_post_rotation = post_rotation_stats['overall_score']
-                            logging.info(f"Simple assignment resulted in coverage: {coverage:.2f}%")
-            
-                            # IMPORTANT: Create a backup of this successful assignment
-                            # Update best_schedule with the current schedule
+                            logging.info(f"Mixed strategy assignment resulted in coverage: {coverage:.2f}%")
+                
+                            # Create a backup of this successful assignment
+                            self._backup_best_schedule()
                             best_schedule = self.schedule.copy()
                             best_worker_assignments = {w_id: assignments.copy() for w_id, assignments in self.worker_assignments.items()}
                             best_worker_posts = {w_id: posts.copy() for w_id, posts in self.worker_posts.items()}    
@@ -1054,6 +1474,10 @@ class Scheduler:
                     filled_shifts = sum(1 for date in self.schedule for shift in self.schedule[date] if shift is not None)
                     coverage = (filled_shifts / total_shifts * 100) if total_shifts > 0 else 0
                     logging.info(f"Final schedule coverage: {coverage:.2f}% ({filled_shifts}/{total_shifts} shifts filled)")
+                    
+                    # Final incompatibility verification check
+                    if filled_count > 0:
+                        self.schedule_builder._verify_no_incompatibilities()
     
                     return True
                 except Exception as e:
@@ -1084,123 +1508,108 @@ class Scheduler:
                     self.worker_weekdays = best_worker_weekdays
                     self.worker_weekends = best_worker_weekends
                     # Don't try to restore constraint_skips here since it might be the source of the error
+
+            # Final incompatibility verification check
+            if filled_count > 0:
+                self.schedule_builder._verify_no_incompatibilities()
+
+            return True
         
         except Exception as e:
             logging.error(f"Failed to generate schedule: {str(e)}", exc_info=True)
             raise SchedulerError(f"Failed to generate schedule: {str(e)}")
 
+    def validate_and_fix_final_schedule(self):
+        """
+        Final validator that scans the entire schedule and fixes any constraint violations.
+        Returns the number of fixes made.
+        """
+        logging.info("Running final schedule validation...")
+    
+        # Count issues
+        incompatibility_issues = 0
+        gap_issues = 0
+        other_issues = 0
+        fixes_made = 0
+    
+        # 1. Check for incompatibilities
+        for date in sorted(self.schedule.keys()):
+            # Get non-None workers assigned to this date
+            workers_assigned = [w for w in self.schedule[date] if w is not None]
+        
+            # Check each pair of workers for incompatibility
+            for i, worker1_id in enumerate(workers_assigned):
+                for worker2_id in workers_assigned[i+1:]:
+                    # Check if workers are incompatible using the schedule_builder method
+                    if self.schedule_builder._are_workers_incompatible(worker1_id, worker2_id):
+                        incompatibility_issues += 1
+                        logging.warning(f"VALIDATION: Found incompatible workers {worker1_id} and {worker2_id} on {date}")
+                    
+                        # Remove one of the workers (preferably one with more assignments)
+                        w1_count = len(self.worker_assignments.get(worker1_id, set()))
+                        w2_count = len(self.worker_assignments.get(worker2_id, set()))
+                    
+                        worker_to_remove = worker1_id if w1_count >= w2_count else worker2_id
+                        post = self.schedule[date].index(worker_to_remove)
+                    
+                        # Remove the worker
+                        self.schedule[date][post] = None
+                        if worker_to_remove in self.worker_assignments:
+                            self.worker_assignments[worker_to_remove].remove(date)
+                    
+                        fixes_made += 1
+                        logging.warning(f"VALIDATION: Removed worker {worker_to_remove} from {date} to fix incompatibility")
+
+        # 2. Check for minimum gap violations (minimum 3-day gap)
+        for worker_id in self.worker_assignments:
+            # Get all dates this worker is assigned to
+            assignments = sorted(list(self.worker_assignments[worker_id]))
+        
+            # Check pairs of dates for gap violations
+            for i in range(len(assignments) - 1):
+                date1 = assignments[i]
+                date2 = assignments[i+1]  # Next chronological assignment
+                days_between = (date2 - date1).days
+            
+                # Check for minimum 3-day gap (always require 3+ days between shifts)
+                if days_between < 3:
+                    gap_issues += 1
+                    logging.warning(f"VALIDATION: Found gap violation for worker {worker_id}: only {days_between} days between {date1} and {date2}")
+                
+                    # Remove the later assignment
+                    post = self.schedule[date2].index(worker_id)
+                    self.schedule[date2][post] = None
+                    self.worker_assignments[worker_id].remove(date2)
+                
+                    fixes_made += 1
+                    logging.warning(f"VALIDATION: Removed worker {worker_id} from {date2} to fix gap violation")
+    
+        # 3. Run the reconcile method to ensure data consistency
+        if self._reconcile_schedule_tracking():
+            other_issues += 1
+    
+        logging.info(f"Final validation complete: Found {incompatibility_issues} incompatibility issues, {gap_issues} gap issues, and {other_issues} other issues. Made {fixes_made} fixes.")
+        return fixes_made
+
     def _validate_final_schedule(self):
         """
-        Validate the final schedule to ensure all constraints are met
-    
-        Raises:
-            SchedulerError: If validation fails
+        Validate the final schedule before returning it.
+        Returns True if valid, False if issues found.
         """
-        logging.info("Validating final schedule...")
-    
-        # Track validation issues
-        validation_issues = []
-    
-        # Check 1: Ensure all dates have the correct number of shifts
-        for date in self._get_date_range(self.start_date, self.end_date):
-            if date not in self.schedule:
-                validation_issues.append(f"Date {date.strftime('%Y-%m-%d')} is missing from the schedule")
-            elif len(self.schedule[date]) != self.num_shifts:
-                validation_issues.append(
-                    f"Date {date.strftime('%Y-%m-%d')} has {len(self.schedule[date])} shifts, expected {self.num_shifts}"
-                )
-    
-        # Check 2: Ensure no worker is assigned to multiple shifts on the same day
-        for date, shifts in self.schedule.items():
-            worker_counts = {}
-            for worker_id in shifts:
-                if worker_id is not None:
-                    worker_counts[worker_id] = worker_counts.get(worker_id, 0) + 1
-                    if worker_counts[worker_id] > 1:
-                        validation_issues.append(
-                            f"Worker {worker_id} is assigned to multiple shifts on {date.strftime('%Y-%m-%d')}"
-                        )
-    
-        # Check 3: Ensure workers have at least minimum gap between shifts
-        for worker in self.workers_data:
-            worker_id = worker['id']
-            dates = sorted(list(self.worker_assignments.get(worker_id, [])))
+        try:
+            # Attempt to reconcile tracking first
+            self._reconcile_schedule_tracking()
         
-            for i in range(len(dates) - 1):
-                gap = (dates[i+1] - dates[i]).days
-                if gap < 2:  # Minimum gap is 2 days
-                    validation_issues.append(
-                        f"Worker {worker_id} has insufficient gap ({gap} days) between shifts on "
-                        f"{dates[i].strftime('%Y-%m-%d')} and {dates[i+1].strftime('%Y-%m-%d')}"
-                    )
-    
-        # Check 4: Ensure all mandatory shifts are assigned
-        for worker in self.workers_data:
-            worker_id = worker['id']
-            mandatory_days = worker.get('mandatory_days', '')
-            if mandatory_days:
-                mandatory_dates = self.date_utils.parse_dates(mandatory_days)
-                relevant_mandatory_dates = [
-                    d for d in mandatory_dates if self.start_date <= d <= self.end_date
-                ]
-            
-                for date in relevant_mandatory_dates:
-                    if date not in self.worker_assignments.get(worker_id, []):
-                        validation_issues.append(
-                            f"Worker {worker_id} is not assigned to mandatory date {date.strftime('%Y-%m-%d')}"
-                        )
-    
-        # Check 5: Ensure no worker is assigned on their days off
-        for worker in self.workers_data:
-            worker_id = worker['id']
-            days_off = worker.get('days_off', '')
-            if days_off:
-                day_ranges = self.date_utils.parse_date_ranges(days_off)
-                for start_date, end_date in day_ranges:
-                    current = start_date
-                    while current <= end_date:
-                        if current in self.worker_assignments.get(worker_id, []):
-                            validation_issues.append(
-                                f"Worker {worker_id} is assigned on day off {current.strftime('%Y-%m-%d')}"
-                            )
-                        current += timedelta(days=1)
-    
-        # Check 6: Ensure tracking data is consistent with schedule
-        for worker_id, assignment_dates in self.worker_assignments.items():
-            for date in assignment_dates:
-                if date not in self.schedule or worker_id not in self.schedule[date]:
-                    validation_issues.append(
-                        f"Tracking inconsistency: Worker {worker_id} is tracked for {date.strftime('%Y-%m-%d')} "
-                        f"but not in schedule"
-                    )
-    
-        # Check for reverse consistency
-        for date, shifts in self.schedule.items():
-            for worker_id in [w for w in shifts if w is not None]:
-                if date not in self.worker_assignments.get(worker_id, []):
-                    validation_issues.append(
-                        f"Tracking inconsistency: Worker {worker_id} is in schedule for {date.strftime('%Y-%m-%d')} "
-                        f"but not in tracking"
-                    )
-
-        # Direct update of schedule from backup after improvements
-        if hasattr(self, 'backup_schedule') and self.backup_schedule:
-            self.schedule = self.backup_schedule.copy()
-            logging.info("Explicitly updated schedule from backup after improvements")
-    
-        # Report validation issues
-        if validation_issues:
-            # Log at most 10 issues to keep logs manageable
-            for issue in validation_issues[:10]:
-                logging.error(f"Validation issue: {issue}")
+            # Run the enhanced validation
+            fixes_made = self.validate_and_fix_final_schedule()
         
-            if len(validation_issues) > 10:
-                logging.error(f"... and {len(validation_issues) - 10} more issues")
+            if fixes_made > 0:
+                logging.info(f"Validation fixed {fixes_made} issues")
         
-            raise SchedulerError(f"Schedule validation failed with {len(validation_issues)} issues")
-    
-        logging.info("Schedule validation successful!")
-        return True
+            return True
+        except Exception as e:
+            logging.error(f"Validation error: {str(e)}", exc_info=True)
+            return False
 
     def _calculate_post_rotation(self):
         """
