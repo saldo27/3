@@ -25,10 +25,10 @@ class Scheduler:
         try:
             # Initialize date_utils FIRST, before calling any method that might need it
             self.date_utils = DateTimeUtils()
-        
+    
             # Then validate the configuration
             self._validate_config(config)
-            
+        
             # Basic setup from config
             self.config = config
             self.start_date = config['start_date']
@@ -37,13 +37,17 @@ class Scheduler:
             self.workers_data = config['workers_data']
             self.holidays = config.get('holidays', [])
         
+            # Get the new configurable parameters with defaults
+            self.gap_between_shifts = config.get('gap_between_shifts', 1)
+            self.max_consecutive_weekends = config.get('max_consecutive_weekends', 2)
+    
             # Initialize tracking dictionaries
             self.schedule = {}
             self.worker_assignments = {w['id']: set() for w in self.workers_data}
-            self.worker_posts = {w['id']: set() for w in self.workers_data}
+            self.worker_posts = {w['id']: {p: 0 for p in range(self.num_shifts)} for w in self.workers_data}
             self.worker_weekdays = {w['id']: {i: 0 for i in range(7)} for w in self.workers_data}
             self.worker_weekends = {w['id']: [] for w in self.workers_data}
-
+            
             # Initialize worker targets
             for worker in self.workers_data:
                 if 'target_shifts' not in worker:
@@ -76,7 +80,9 @@ class Scheduler:
             self.schedule_builder = ScheduleBuilder(self)
             self.eligibility_tracker = WorkerEligibilityTracker(
                 self.workers_data,
-                self.holidays
+                self.holidays,
+                self.gap_between_shifts,
+                self.max_consecutive_weekends
             )
 
             # Calculate targets before proceeding
@@ -91,10 +97,10 @@ class Scheduler:
     def _validate_config(self, config):
         """
         Validate configuration parameters
-        
+    
         Args:
             config: Dictionary containing schedule configuration
-            
+        
         Raises:
             SchedulerError: If configuration is invalid
         """
@@ -107,7 +113,7 @@ class Scheduler:
         # Validate date range
         if not isinstance(config['start_date'], datetime) or not isinstance(config['end_date'], datetime):
             raise SchedulerError("Start date and end date must be datetime objects")
-            
+        
         if config['start_date'] > config['end_date']:
             raise SchedulerError("Start date must be before end date")
 
@@ -119,6 +125,16 @@ class Scheduler:
         if not config['workers_data'] or not isinstance(config['workers_data'], list):
             raise SchedulerError("workers_data must be a non-empty list")
 
+        # Validate gap_between_shifts if present
+        if 'gap_between_shifts' in config:
+            if not isinstance(config['gap_between_shifts'], int) or config['gap_between_shifts'] < 0:
+                raise SchedulerError("gap_between_shifts must be a non-negative integer")
+    
+        # Validate max_consecutive_weekends if present
+        if 'max_consecutive_weekends' in config:
+            if not isinstance(config['max_consecutive_weekends'], int) or config['max_consecutive_weekends'] <= 0:
+                raise SchedulerError("max_consecutive_weekends must be a positive integer")
+            
         # Validate each worker's data
         for worker in config['workers_data']:
             if not isinstance(worker, dict):
@@ -166,7 +182,9 @@ class Scheduler:
         logging.info(f"End date: {self.end_date}")
         logging.info(f"Number of shifts: {self.num_shifts}")
         logging.info(f"Number of workers: {len(self.workers_data)}")
-        logging.info(f"Holidays: {[h.strftime('%Y-%m-%d') for h in self.holidays]}")
+        logging.info(f"Holidays: {[h.strftime('%d-%m-%Y') for h in self.holidays]}")
+        logging.info(f"Gap between shifts: {self.gap_between_shifts}")
+        logging.info(f"Max consecutive weekend/holiday shifts: {self.max_consecutive_weekends}")
         logging.info(f"Current datetime (Spain): {self.current_datetime}")
         logging.info(f"Current user: {self.current_user}")
 
@@ -174,7 +192,7 @@ class Scheduler:
         """Reset all schedule data"""
         self.schedule = {}
         self.worker_assignments = {w['id']: set() for w in self.workers_data}
-        self.worker_posts = {w['id']: set() for w in self.workers_data}
+        self.worker_posts = {w['id']: {p: 0 for p in range(self.num_shifts)} for w in self.workers_data}
         self.worker_weekdays = {w['id']: {i: 0 for i in range(7)} for w in self.workers_data}
         self.worker_weekends = {w['id']: [] for w in self.workers_data}
         self.constraint_skips = {
@@ -502,60 +520,121 @@ class Scheduler:
         logging.info("Data integrity check completed")
         return True
 
-    def _update_tracking_data(self, worker_id, date, shift_idx):
+    def _update_tracking_data(self, worker_id, date, post, removing=False):
         """
-        Update tracking data structures when a worker is assigned to a shift
+        Update all tracking dictionaries when a worker is assigned OR removed.
+        Handles worker_posts, worker_weekdays, and worker_weekends.
+        Note: worker_assignments modification is handled directly in the calling
+        functions (_try_fill_empty_shifts, _balance_workloads, etc.) for atomicity.
 
         Args:
-            worker_id: ID of the worker being assigned
-            date: Date of assignment
-            shift_idx: Index of the shift being assigned (0-indexed)
+            worker_id: ID of the worker. Can be None if removing a placeholder.
+            date: The datetime.date object of the assignment/removal.
+            post: The post number (integer) of the assignment/removal.
+            removing (bool): If True, decrement stats/remove entries; otherwise, increment/add.
+                             Defaults to False.
         """
-        try:
-            # Update worker assignments
-            if worker_id not in self.worker_assignments:
-                self.worker_assignments[worker_id] = set()
-            self.worker_assignments[worker_id].add(date)
-    
-            # Update post tracking
-            if worker_id not in self.worker_posts:
-                self.worker_posts[worker_id] = set()
-            self.worker_posts[worker_id].add(shift_idx)
-    
-            # Update weekday counts
-            if worker_id not in self.worker_weekdays:
-                self.worker_weekdays[worker_id] = {i: 0 for i in range(7)}
-            weekday = date.weekday()
-            self.worker_weekdays[worker_id][weekday] += 1
-    
-            # Update weekend tracking
-            if worker_id not in self.worker_weekends:
-                self.worker_weekends[worker_id] = []
-            is_weekend = date.weekday() >= 4 or date in self.holidays  # Friday, Saturday, Sunday or holiday
-            if is_weekend:
-                if date not in self.worker_weekends[worker_id]:
-                    self.worker_weekends[worker_id].append(date)
-                self.worker_weekends[worker_id].sort()  # Keep sorted
-    
-            # Update the worker eligibility tracker if it exists
-            if hasattr(self, 'eligibility_tracker'):
-                self.eligibility_tracker.update_worker_status(worker_id, date)
-            
-            # Update the main schedule
-            if date not in self.schedule:
-                self.schedule[date] = [None] * self.num_shifts
-            
-            # Fill any gaps in the schedule list
-            while len(self.schedule[date]) <= shift_idx:
-                self.schedule[date].append(None)
-            
-            # Set the worker at the specific shift
-            self.schedule[date][shift_idx] = worker_id
-        
-            logging.debug(f"Updated tracking data for worker {worker_id} on {date.strftime('%Y-%m-%d')}, shift {shift_idx}")
-        
-        except Exception as e:
-            logging.error(f"Error updating tracking data for worker {worker_id}: {str(e)}", exc_info=True)
+        # Safety check if a None assignment is somehow passed during removal
+        if worker_id is None:
+            logging.debug(f"Skipping tracking update for None worker on {date.strftime('%Y-%m-%d')}, post {post}, removing={removing}")
+            return
+
+        logging.debug(f"Updating tracking data for worker {worker_id} on {date.strftime('%Y-%m-%d')}, post {post}, removing={removing}")
+
+        # Determine the increment/decrement value for counts
+        change = -1 if removing else 1
+
+        # --- Update worker_posts ---
+        # Assumes self.worker_posts is {worker_id: {post_index: count}}
+        if worker_id in self.worker_posts:
+            current_post_count = self.worker_posts[worker_id].get(post, 0)
+            new_post_count = max(0, current_post_count + change) # Ensure count doesn't go below 0
+            self.worker_posts[worker_id][post] = new_post_count
+            logging.debug(f"Worker {worker_id} post {post} count updated to {new_post_count}")
+        elif not removing: # Only initialize if adding and worker dict doesn't exist
+            # Initialize post counts for this worker if they are being added for the first time
+            self.worker_posts[worker_id] = {p: 0 for p in range(self.num_shifts)}
+            self.worker_posts[worker_id][post] = 1 # Set initial count to 1
+            logging.debug(f"Initialized post counts for worker {worker_id}; post {post} set to 1")
+        else:
+             # Worker not found during removal, log a warning
+             logging.warning(f"Tried to update post counts for non-existent worker {worker_id} during removal.")
+
+
+        # --- Update worker_weekdays ---
+        # Assumes self.worker_weekdays is {worker_id: {weekday_index: count}}
+        weekday = date.weekday() # Monday is 0 and Sunday is 6
+        if worker_id in self.worker_weekdays:
+            current_weekday_count = self.worker_weekdays[worker_id].get(weekday, 0)
+            new_weekday_count = max(0, current_weekday_count + change) # Ensure count doesn't go below 0
+            self.worker_weekdays[worker_id][weekday] = new_weekday_count
+            logging.debug(f"Worker {worker_id} weekday {weekday} count updated to {new_weekday_count}")
+        elif not removing: # Only initialize if adding and worker dict doesn't exist
+            # Initialize weekday counts for this worker
+            self.worker_weekdays[worker_id] = {wd: 0 for wd in range(7)}
+            self.worker_weekdays[worker_id][weekday] = 1 # Set initial count to 1
+            logging.debug(f"Initialized weekday counts for worker {worker_id}; weekday {weekday} set to 1")
+        else:
+            # Worker not found during removal, log a warning
+            logging.warning(f"Tried to update weekday counts for non-existent worker {worker_id} during removal.")
+
+
+        # --- Update worker_weekends ---
+        # Assumes self.worker_weekends is {worker_id: [date1, date2, ...]}
+        # Check if the date is a weekend (Sat/Sun) or a defined holiday
+        # Ensure self.holidays is a list or set of datetime.date objects
+        # Ensure self.date_utils exists and has is_holiday method if using holidays
+        is_weekend_day = date.weekday() >= 5 # Saturday (5) or Sunday (6)
+        is_holiday_day = hasattr(self, 'date_utils') and hasattr(self.date_utils, 'is_holiday') and self.date_utils.is_holiday(date)
+        # Alternatively, if date_utils not available/reliable:
+        # is_holiday_day = date in self.holidays
+
+        is_tracked_as_weekend = is_weekend_day or is_holiday_day
+
+        if is_tracked_as_weekend:
+            if worker_id in self.worker_weekends:
+                if removing:
+                    # Try to remove the date if it exists in the list
+                    if date in self.worker_weekends[worker_id]:
+                        try:
+                            self.worker_weekends[worker_id].remove(date)
+                            logging.debug(f"Removed weekend/holiday date {date.strftime('%Y-%m-%d')} for worker {worker_id}")
+                        except ValueError:
+                            # Should not happen due to 'if date in ...' check, but belt-and-suspenders
+                            logging.error(f"Internal error: Date {date.strftime('%Y-%m-%d')} was in worker {worker_id}'s weekend list but remove failed.")
+                    else:
+                        logging.warning(f"Tried to remove weekend/holiday date {date.strftime('%Y-%m-%d')} for worker {worker_id}, but it was not in their list.")
+                else: # Adding
+                    # Add the date only if it's not already present
+                    if date not in self.worker_weekends[worker_id]:
+                        self.worker_weekends[worker_id].append(date)
+                        self.worker_weekends[worker_id].sort() # Keep the list sorted
+                        logging.debug(f"Added weekend/holiday date {date.strftime('%Y-%m-%d')} for worker {worker_id}")
+                    else:
+                        # Date already exists, likely due to multiple shifts on the same weekend day or re-processing
+                        logging.debug(f"Weekend/holiday date {date.strftime('%Y-%m-%d')} already present for worker {worker_id}, not adding again.")
+
+            elif not removing: # Initialize if adding and worker dict doesn't exist
+                # Initialize weekend list for this worker
+                self.worker_weekends[worker_id] = [date]
+                logging.debug(f"Initialized weekend/holiday list for worker {worker_id} with date {date.strftime('%Y-%m-%d')}")
+            else:
+                 # Worker not found during removal, log a warning
+                 logging.warning(f"Tried to update weekend/holiday list for non-existent worker {worker_id} during removal.")
+
+        # --- Update Constraint Skips (Optional) ---
+        # If removing an assignment could potentially resolve a previously logged constraint skip,
+        # you might add logic here to remove entries from self.constraint_skips.
+        # However, this is complex and often not necessary unless you explicitly need to track
+        # the *current* number of active violations. Usually, skips are logged historically.
+        # Example (conceptual):
+        # if removing and worker_id in self.constraint_skips:
+        #     # Check if removing 'date' resolves a 'gap' skip involving 'date'
+        #     # Check if removing 'date' resolves an 'incompatibility' skip involving 'date'
+        #     pass # Add specific logic if needed
+
+        logging.debug(f"Finished updating tracking data for worker {worker_id}")
+
     
     def _get_date_range(self, start_date, end_date):
         """
@@ -627,7 +706,7 @@ class Scheduler:
             if sample_size > 0:
                 sample_dates = list(self.schedule.keys())[:sample_size]
                 for date in sample_dates:
-                    logging.debug(f"Sample date {date.strftime('%Y-%m-%d')}: {self.schedule[date]}")
+                    logging.debug(f"Sample date {date.strftime('%d-%m-%Y')}: {self.schedule[date]}")
         
             # Calculate percentage
             if total_shifts > 0:
@@ -641,7 +720,6 @@ class Scheduler:
         """
         Simple method to directly assign workers to shifts based on targets and ensuring
         all constraints are properly respected:
-        - Minimum 2 days off between shifts (3+ days between assignments)
         - Special Friday-Monday constraint
         - 7/14 day pattern avoidance
         - Worker incompatibility checking
@@ -679,45 +757,47 @@ class Scheduler:
                 currently_assigned = []
                 if date in self.schedule:
                     currently_assigned = [w for w in self.schedule[date] if w is not None]
-        
+    
                 # Try each worker in priority order
                 for worker in workers_by_priority:
                     worker_id = worker['id']
-            
+
                     # Skip if worker is already assigned to this date
                     if worker_id in currently_assigned:
                         continue
-                
+    
                     # Skip if worker has reached their target
                     if worker_assignment_counts[worker_id] >= worker_targets[worker_id]:
                         continue
-                
-                    # IMPORTANT: Check for minimum gap of 2 days off (3+ days between assignments)
+    
+                    # Initialize too_close flag
                     too_close = False
+    
+                    # Inside the loop where we check minimum gap
                     for assigned_date in self.worker_assignments.get(worker_id, set()):
                         days_difference = abs((date - assigned_date).days)
-                    
-                        # We need at least 2 days off, so 3+ days between assignments
-                        if days_difference < 3:  # THIS IS THE KEY CHANGE
+    
+                        # We need at least gap_between_shifts days off, so (gap+1)+ days between assignments
+                        min_days_between = self.gap_between_shifts + 1
+                        if days_difference < min_days_between:
                             too_close = True
                             break
-                    
+    
                         # Special case: Friday-Monday (needs 3 days off, so 4+ days between)
-                        # This is handled by the general case above (< 3), but keeping for clarity
                         if days_difference == 3:
                             if ((date.weekday() == 0 and assigned_date.weekday() == 4) or 
                                 (date.weekday() == 4 and assigned_date.weekday() == 0)):
                                 too_close = True
                                 break
-                    
+    
                         # Check for 7 or 14 day patterns (same day of week)
                         if days_difference == 7 or days_difference == 14:
                             too_close = True
                             break
-                
+    
                     if too_close:
                         continue
-                
+                    
                     # Check for worker incompatibilities
                     incompatible_with = worker.get('incompatible_with', [])
                     if incompatible_with:
@@ -726,7 +806,7 @@ class Scheduler:
                             if incompatible_id in currently_assigned:
                                 has_conflict = True
                                 break
-    
+
                         if has_conflict:
                             continue
                 
@@ -758,7 +838,7 @@ class Scheduler:
                     currently_assigned.append(worker_id)
             
                     # Log the assignment
-                    logging.info(f"Assigned worker {worker_id} to {date.strftime('%Y-%m-%d')}, post {post}")
+                    logging.info(f"Assigned worker {worker_id} to {date.strftime('%d-%m-%Y')}, post {post}")
                 else:
                     # No suitable worker found, leave unassigned
                     if date not in self.schedule:
@@ -767,7 +847,7 @@ class Scheduler:
                     while len(self.schedule[date]) <= post:
                         self.schedule[date].append(None)
                     
-                    logging.debug(f"No suitable worker found for {date.strftime('%Y-%m-%d')}, post {post}")
+                    logging.debug(f"No suitable worker found for {date.strftime('%d-%m-%Y')}, post {post}")
     
         # 4. Return the number of assignments made
         total_assigned = sum(worker_assignment_counts.values())
@@ -890,15 +970,15 @@ class Scheduler:
                     
                         days_between = abs((date2 - date1).days)
                     
-                        # Check for insufficient rest periods (less than 2 days)
-                        if 0 < days_between < 2:
+                        # When checking for insufficient rest periods
+                        if 0 < days_between < self.gap_between_shifts + 1:
                             violations.append({
                                 'type': 'min_rest_days',
                                 'worker_id': worker_id,
                                 'date1': date1,
                                 'date2': date2,
                                 'days_between': days_between,
-                                'min_required': 2
+                                'min_required': self.gap_between_shifts
                             })
                     
                         # Check for Friday-Monday assignments (special case requiring 3 days)
@@ -970,7 +1050,6 @@ class Scheduler:
         Returns True if assignment is allowed, False otherwise.        
     
         Enforces:
-        - Minimum 2 days between shifts in general
         - Special case: No Friday-Monday assignments (require 3 days gap)
         - No 7 or 14 day patterns
         - Worker incompatibility constraints
@@ -989,19 +1068,23 @@ class Scheduler:
             for assigned_date in self.worker_assignments.get(worker_id, set()):
                 days_difference = abs((date - assigned_date).days)
         
-                # Basic minimum gap check (2 days)
-                if days_difference < 3:  # Changed to 3 for minimum 3-day gap
-                    logging.debug(f"Worker {worker_id} cannot be assigned on {date} due to insufficient rest (needs at least 3 days)")
-                    return False
-                
-                # Special case: Friday-Monday check (requires 3 days gap)
-                # Check if either date is Friday and the other is Monday
-                if days_difference == 3:
-                    # Check if one date is Friday (weekday 4) and the other is Monday (weekday 0)
-                    if ((assigned_date.weekday() == 4 and date.weekday() == 0) or 
-                        (assigned_date.weekday() == 0 and date.weekday() == 4)):
-                        logging.debug(f"Worker {worker_id} cannot be assigned Friday-Monday (needs at least 3 days gap)")
+                # Check past assignments for minimum gap and patterns
+                for assigned_date in self.worker_assignments.get(worker_id, set()):
+                    days_difference = abs((date - assigned_date).days)
+    
+                    # Basic minimum gap check based on configurable parameter
+                    min_days_between = self.gap_between_shifts + 1  # +1 because we need days_difference > gap
+                    if days_difference < min_days_between:
+                        logging.debug(f"Worker {worker_id} cannot be assigned on {date} due to insufficient rest (needs at least {min_days_between} days)")
                         return False
+        
+                    # Special case for Friday-Monday if gap is only 1 day
+                    if self.gap_between_shifts == 1 and days_difference == 3:
+                        # Check if one date is Friday (weekday 4) and the other is Monday (weekday 0)
+                        if ((assigned_date.weekday() == 4 and date.weekday() == 0) or 
+                            (assigned_date.weekday() == 0 and date.weekday() == 4)):
+                            logging.debug(f"Worker {worker_id} cannot be assigned Friday-Monday (needs at least {self.gap_between_shifts + 2} days gap)")
+                            return False
             
                 # Check 7 or 14 day patterns (to avoid same day of week assignments)
                 if days_difference == 7 or days_difference == 14:
@@ -1125,7 +1208,7 @@ class Scheduler:
                 worker['work_periods'] = f"{start_str} - {end_str}"
                 logging.info(f"Worker {worker['id']}: Empty work period set to full schedule period")
             
-    def generate_schedule(self, num_attempts=90, allow_feedback_improvement=True, improvement_attempts=40):
+    def generate_schedule(self, num_attempts=60, allow_feedback_improvement=True, improvement_attempts=30):
         """
         Generate the complete schedule using a multi-phase approach to maximize shift coverage
     
@@ -1514,6 +1597,18 @@ class Scheduler:
                 self.schedule_builder._verify_no_incompatibilities()
 
             return True
+
+            max_improvement_iterations = 10 # Safety limit
+            for i in range(max_improvement_iterations):
+                logging.info(f"--- Starting Global Improvement Iteration {i+1}/{max_improvement_iterations} ---")
+                # Call the builder's improvement function
+                made_improvement = self.schedule_builder._apply_targeted_improvements(attempt_number=i)
+
+                if not made_improvement:
+                    logging.info(f"No improvements made in iteration {i+1}. Stopping improvement loop.")
+                    break # Exit loop if no changes were made in a full pass
+                elif i == max_improvement_iterations - 1:
+                    logging.warning("Reached maximum improvement iterations.")
         
         except Exception as e:
             logging.error(f"Failed to generate schedule: {str(e)}", exc_info=True)
@@ -1560,7 +1655,7 @@ class Scheduler:
                         fixes_made += 1
                         logging.warning(f"VALIDATION: Removed worker {worker_to_remove} from {date} to fix incompatibility")
 
-        # 2. Check for minimum gap violations (minimum 3-day gap)
+        # 2. Check for minimum gap violations
         for worker_id in self.worker_assignments:
             # Get all dates this worker is assigned to
             assignments = sorted(list(self.worker_assignments[worker_id]))
@@ -1570,12 +1665,13 @@ class Scheduler:
                 date1 = assignments[i]
                 date2 = assignments[i+1]  # Next chronological assignment
                 days_between = (date2 - date1).days
-            
-                # Check for minimum 3-day gap (always require 3+ days between shifts)
-                if days_between < 3:
+                    
+                # Check for minimum gap based on configuration
+                min_days_between = self.gap_between_shifts + 1
+                if days_between < min_days_between:
                     gap_issues += 1
-                    logging.warning(f"VALIDATION: Found gap violation for worker {worker_id}: only {days_between} days between {date1} and {date2}")
-                
+                    logging.warning(f"VALIDATION: Found gap violation for worker {worker_id}: only {days_between} days between {date1} and {date2}, minimum required: {min_days_between}")
+                    
                     # Remove the later assignment
                     post = self.schedule[date2].index(worker_id)
                     self.schedule[date2][post] = None
@@ -1844,7 +1940,7 @@ class Scheduler:
         Returns:
             str: Name of the generated file
         """
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        timestamp = datetime.now().strftime('%d%m%Y_%H%M%S')
         filename = f'schedule_{timestamp}.{format}'
         
         if format == 'txt':
@@ -1891,7 +1987,7 @@ class Scheduler:
                 'stats': stats,
                 'metrics': metrics,
                 'coverage': coverage,
-                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'timestamp': datetime.now().strftime('%d-%m-%Y %H:%M:%S'),
                 'validator': self.current_user
             }
             
