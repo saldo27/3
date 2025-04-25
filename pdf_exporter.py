@@ -1,14 +1,27 @@
-from kivy.app import App 
+from kivy.app import App
 from kivy.uix.popup import Popup
 from kivy.uix.label import Label
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4, landscape, letter
+from reportlab.lib.pagesizes import A4, landscape, letter # Keep A4 if needed elsewhere
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
+from reportlab.lib.units import inch, cm # Use cm for better control maybe
 from calendar import monthcalendar
 from datetime import datetime
 import logging
+
+def numeric_sort_key(item):
+    """
+    Attempts to convert the first element of a tuple (the key) to an integer
+    for sorting. Returns a tuple to prioritize numeric keys and handle errors.
+    item[0] is assumed to be the worker ID (key).
+    """
+    try:
+        # Try converting the key (worker ID) to an integer
+        return (0, int(item[0])) # (0, numeric_value) - sorts numbers first
+    except (ValueError, TypeError):
+        # If conversion fails, return a tuple indicating it's non-numeric
+        return (1, item[0]) # (1, original_string) - sorts non-numbers after numbers
 
 class PDFExporter:
     def __init__(self, schedule_config):
@@ -17,157 +30,124 @@ class PDFExporter:
         self.num_shifts = schedule_config.get('num_shifts', 0)
         self.holidays = schedule_config.get('holidays', [])
         self.styles = getSampleStyleSheet()
+        self.styles.add(ParagraphStyle(name='SmallNormal', parent=self.styles['Normal'], fontSize=9))
+        self.styles.add(ParagraphStyle(name='SmallBold', parent=self.styles['SmallNormal'], fontName='Helvetica-Bold'))
 
-    def export_summary_pdf(self, year, month, month_stats): 
-        """Export a detailed summary with shift listings as a PDF file"""
-        # Initialize filename here before the try block
-        filename = f"summary_{datetime(year, month, 1).strftime('%B_%Y')}.pdf" 
+    def export_summary_pdf(self, stats_data): # Takes the whole stats dictionary now
+        """Export a detailed GLOBAL summary with shift listings and distributions."""
+
+        # --- Determine Filename and Title from stats_data ---
+        start = stats_data.get('period_start')
+        end = stats_data.get('period_end')
+        if start and end:
+            period_str_file = f"{start.strftime('%Y%m%d')}_{end.strftime('%Y%m%d')}"
+            period_str_title = f"{start.strftime('%d-%m-%Y')} to {end.strftime('%d-%m-%Y')}"
+            filename = f"summary_global_{period_str_file}.pdf"
+            title_text = f"Schedule Summary ({period_str_title})"
+        else:
+            filename = "summary_global_full_period.pdf"
+            title_text = "Schedule Summary (Full Period)"
+        # --- End Filename/Title ---
+
         try:
-            # Remove: app = App.get_running_app() # Not needed here if Popup/Label are imported
-            # Use year and month passed as arguments
-            month_name = datetime(year, month, 1).strftime('%B_%Y')
-            # filename = f"summary_{month_name}.pdf" # Moved filename creation outside try
-        
-            # Get the necessary data from reportlab
-            from reportlab.lib import colors
-            from reportlab.lib.pagesizes import letter
-            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-            from reportlab.lib.styles import getSampleStyleSheet
-        
-            # Create document directly (not using PDFExporter to avoid any potential issues)
             doc = SimpleDocTemplate(
-                filename,
-                pagesize=letter,
-                rightMargin=30,
-                leftMargin=30,
-                topMargin=30,
-                bottomMargin=30
+                filename, pagesize=A4, # Portrait A4
+                rightMargin=1.5*cm, leftMargin=1.5*cm, topMargin=1.5*cm, bottomMargin=1.5*cm
             )
-        
-            # Get styles
-            styles = getSampleStyleSheet()
-        
-            # Prepare PDF content
+            styles = self.styles
             story = []
-        
-            # Add title
-            title_style = styles['Heading1']
-            title = Paragraph(f"Summary for {month_name}", title_style)
+            weekdays_short = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+
+            # --- PDF Title (using new title_text) ---
+            title = Paragraph(title_text, styles['h1'])
             story.append(title)
-            story.append(Spacer(1, 20))
-        
-            # Add overall statistics
-            stats_title = Paragraph("Overall Statistics", styles['Heading2'])
-            story.append(stats_title)
-            story.append(Spacer(1, 10))
-        
-            # Create statistics table
-            stats_data = [
-                ["Total Workers", str(len(month_stats['workers']))],
-                ["Total Shifts", str(month_stats['total_shifts'])],
-                ["Weekend Shifts", str(month_stats['weekend_shifts'])],
-                ["Last Post Shifts", str(month_stats['last_post_shifts'])]
-            ]
-        
-            stats_table = Table(stats_data, colWidths=[200, 100])
-            stats_table.setStyle(TableStyle([
-                ('GRID', (0, 0), (-1, -1), 1, colors.black),
-                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ]))
-            story.append(stats_table)
-            story.append(Spacer(1, 20))
-        
-            # Add worker details
-            worker_title = Paragraph("Worker Details", styles['Heading2'])
+            story.append(Spacer(1, 0.5*cm))
+
+            # --- Worker Details ---
+            worker_title = Paragraph("Worker Details & Distributions", styles['h2'])
             story.append(worker_title)
-            story.append(Spacer(1, 10))
-        
-            # Add each worker's information
-            for worker_id, stats in sorted(month_stats['workers'].items()):
-                # Worker header
-                worker_header = Paragraph(f"Worker {worker_id}", styles['Heading3'])
-                story.append(worker_header)
-                story.append(Spacer(1, 5))
-            
-                # Worker statistics
-                worker_stats = [
-                    ["Total Shifts", str(stats['total'])],
-                    ["Weekend Shifts", str(stats['weekends'])],
-                    ["Last Post Shifts", str(stats['last_post'])]
-                ]
-            
-                worker_table = Table(worker_stats, colWidths=[150, 100])
-                worker_table.setStyle(TableStyle([
-                    ('GRID', (0, 0), (-1, -1), 1, colors.black),
-                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-                ]))
-                story.append(worker_table)
-                story.append(Spacer(1, 10))
-            
-                # If we have shift data, show it
-                worker_shifts = month_stats['worker_shifts'].get(worker_id, [])
-                if worker_shifts:
-                    shift_title = Paragraph("Assigned Shifts:", styles['Normal'])
-                    story.append(shift_title)
-                    story.append(Spacer(1, 5))
-                
-                    # Create shifts table
-                    shifts_data = [["Date", "Day", "Post", "Type"]]
-                
-                    for shift in sorted(worker_shifts, key=lambda x: x['date']):
-                        date_str = shift['date'].strftime('%d-%m-%Y')
-                        day_str = shift['day']
-                        post_str = f"Post {shift['post']}"
-                    
-                        day_type = "Regular"
-                        if shift['is_holiday']:
-                            day_type = "HOLIDAY"
-                        elif shift['is_weekend']:
-                            day_type = "WEEKEND"
-                    
-                        shifts_data.append([date_str, day_str, post_str, day_type])
-                
-                    shifts_table = Table(shifts_data, colWidths=[80, 80, 60, 80])
-                    shifts_table.setStyle(TableStyle([
-                        ('GRID', (0, 0), (-1, -1), 1, colors.black),
-                        ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
-                        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-                        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                    ]))
-                    story.append(shifts_table)
-                else:
-                    story.append(Paragraph("No shifts assigned", styles['Normal']))
-            
-                story.append(Spacer(1, 15))
-        
-            # Build the PDF
+            story.append(Spacer(1, 0.3*cm))
+            story.append(Paragraph("<u>Assigned Shifts:</u>", styles['SmallBold']))
+
+            # Use the workers data directly from stats_data
+            workers_stats = stats_data.get('workers', {})
+            worker_shifts_all = stats_data.get('worker_shifts', {})
+
+            if not workers_stats:
+                 story.append(Paragraph("No worker statistics found for this period.", styles['Normal']))
+            else:
+                for worker_id, stats in sorted(workers_stats.items()):
+                    # --- Worker Header ---
+                    worker_header = Paragraph(f"Worker {worker_id}", styles['h3'])
+                    story.append(worker_header)
+                    story.append(Spacer(1, 0.2*cm))
+
+                    # Get stats
+                    total_w = stats.get('total', 0)
+                    # ... (get weekends_w, holidays_w, last_post_w, weekday_counts, post_counts) ...
+                    holidays_w = stats.get('holidays', 0)
+                    last_post_w = stats.get('last_post', 0)
+                    weekday_counts = stats.get('weekday_counts', {})
+                    post_counts = stats.get('post_counts', {})
+                    worker_shifts = worker_shifts_all.get(worker_id, []) # Get shifts for this worker
+
+
+                    # --- Worker Summary Stats ---
+                    summary_text = f"<b>Total Shifts:</b> {total_w} | <b>Weekend Shifts:</b> {stats.get('weekends', 0)} | <b>Holiday Shifts:</b> {holidays_w} | <b>Last Post Shifts:</b> {last_post_w}"
+                    story.append(Paragraph(summary_text, styles['Normal']))
+                    story.append(Spacer(1, 0.1*cm))
+
+                    # --- Weekday Distribution ---
+                    weekdays_str = "<b>Weekdays:</b> " + " ".join([f"{weekdays_short[i]}:{weekday_counts.get(i, 0)}" for i in range(7)])
+                    story.append(Paragraph(weekdays_str, styles['Normal']))
+                    story.append(Spacer(1, 0.1*cm))
+
+                    # --- Post Distribution ---
+                    posts_str = "<b>Posts:</b> " + " ".join([f"P{post+1}:{count}" for post, count in sorted(post_counts.items())])
+                    story.append(Paragraph(posts_str, styles['Normal']))
+                    story.append(Spacer(1, 0.3*cm))
+
+                    # --- Assigned Shifts Table ---
+                    if worker_shifts:
+                        story.append(Paragraph("<u>Assigned Shifts:</u>", styles['SmallBold']))
+                        story.append(Spacer(1, 0.1*cm))
+
+                        shifts_data = [['Date', 'Day', 'Post', 'Type']]
+                        # Sort shifts by date
+                        for shift in sorted(worker_shifts, key=lambda x: x['date']):
+                            date_str = shift['date'].strftime('%d-%m-%Y')
+                            day_str = shift['day'][:3]
+                            post_str = f"P{shift['post']}"
+                            day_type = ""
+                            if shift['is_holiday']: day_type = "HOL"
+                            elif shift['is_weekend']: day_type = "W/E"
+                            shifts_data.append([date_str, day_str, post_str, day_type])
+
+                        # Limit table height? Consider splitting if too long? For now, let it flow.
+                        shifts_table = Table(shifts_data, colWidths=[2.5*cm, 1.5*cm, 1.5*cm, 1.5*cm], repeatRows=1) # Repeat header row
+                        shifts_table.setStyle(TableStyle([
+                            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                            ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+                            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                            ('FONTSIZE', (0, 0), (-1, -1), 9),
+                            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                            ('ALIGN', (0, 1), (0, -1), 'LEFT'),
+                        ]))
+                        story.append(shifts_table)
+                    else:
+                        story.append(Paragraph("No shifts assigned in this period.", styles['SmallNormal']))
+
+                    story.append(Spacer(1, 0.5*cm)) # Space between workers
+
+            # --- Build PDF ---
             doc.build(story)
-        
-            # Show success message (Uses Popup/Label, now imported)
-            popup = Popup(
-                title='Success',
-                content=Label(text=f'Summary exported to {filename}'),
-                size_hint=(None, None),
-                size=(400, 200)
-            )
-            popup.open()
-            logging.info(f"Successfully created PDF: {filename}")
-            
-            # Return filename on success
-            return filename 
-        
+            logging.info(f"Successfully created GLOBAL summary PDF: {filename}")
+            return filename # Return filename on success
+
         except Exception as e:
-            # Log the error with full traceback for debugging
-            logging.error(f"Failed to export summary PDF: {str(e)}", exc_info=True)
-        
-            # Show error popup
-            popup = Popup(
-                title='Error',
-                content=Label(text=f'Failed to export PDF: {str(e)}'),
-                size_hint=(None, None),
-                size=(400, 200)
-            )
-            popup.open()
+            logging.error(f"Failed to export GLOBAL summary PDF: {str(e)}", exc_info=True)
+            raise e # Re-raise for main.py to catch
         
     def export_monthly_calendar(self, year, month, filename=None):
         """Export monthly calendar view to PDF"""
