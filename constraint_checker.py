@@ -99,30 +99,30 @@ class ConstraintChecker:
         """Check minimum gap between assignments"""
         worker = next((w for w in self.workers_data if w['id'] == worker_id), None)
         work_percentage = worker.get('work_percentage', 100) if worker else 100
-    
+
         # Use consistent gap rules
         actual_min_gap = 3 if work_percentage < 100 else 2
-    
+
         assignments = sorted(self.worker_assignments.get(worker_id, []))
         if assignments:
             for prev_date in assignments:
                 days_between = abs((date - prev_date).days)
-            
-                # Basic gap check
-                if days_between < actual_min_gap:
+        
+                # Basic gap check - Fixed to only check non-zero gaps
+                if 0 < days_between < actual_min_gap:
                     return False
-                
+            
                 # Special rule for full-time workers: Prevent Friday + Monday assignments
                 if work_percentage >= 100:
                     if ((prev_date.weekday() == 4 and date.weekday() == 0) or 
                         (date.weekday() == 4 and prev_date.weekday() == 0)):
                         if days_between == 3:  # The gap between Friday and Monday
                             return False
-            
+        
                 # Prevent same day of week in consecutive weeks
-                if days_between in [7, 14, 21]:
+                if days_between in [7, 14]:
                     return False
-                
+            
         return True
     
     def _would_exceed_weekend_limit(self, worker_id, date, relaxation_level=0):
@@ -254,22 +254,22 @@ class ConstraintChecker:
             assignments = sorted(list(self.worker_assignments.get(worker_id, [])))
             if assignments:
                 for prev_date in assignments:
-                    days_since = abs((date - prev_date).days)
-                    if days_since < self.gap_between_shifts + 1:  # Use the configured minimum gap
-                        logging.debug(f"- Failed: Insufficient gap ({days_since} days)")
+                    days_between = abs((date - prev_date).days)
+                    if 0 < days_between < self.gap_between_shifts + 1:  # Fixed to only check non-zero gaps within range
+                        logging.debug(f"- Failed: Insufficient gap ({days_between} days)")
                         return False
 
             # 6. CRITICAL: Check weekend limit - NEVER RELAX THIS
             if self._would_exceed_weekend_limit(worker_id, date):
                 logging.debug(f"- Failed: Would exceed weekend limit")
                 return False
-            
+        
             return True
 
         except Exception as e:
             logging.error(f"Error in _can_assign_worker for worker {worker_id}: {str(e)}", exc_info=True)
             return False
-        
+              
     def _check_constraints(self, worker_id, date, skip_constraints=False, try_part_time=False):
         """
         Unified constraint checking
@@ -289,12 +289,12 @@ class ConstraintChecker:
             # Gap constraints
             if not skip_constraints:
                 min_gap = 3 if try_part_time and work_percentage < 100 else self.gap_between_shifts + 1
-                
+            
                 assignments = sorted(list(self.worker_assignments.get(worker_id, [])))
                 if assignments:
                     for prev_date in assignments:
                         days_between = abs((date - prev_date).days)
-                        if days_between < min_gap:
+                        if 0 < days_between < min_gap:  # Fixed to only check non-zero gaps within range
                             return False, f"gap constraint ({min_gap} days)"
 
             # Incompatibility constraints
@@ -302,7 +302,7 @@ class ConstraintChecker:
                 return False, "incompatibility"
 
             # Weekend constraints
-            if date.weekday() >= 4 or date in self.holidays:  # Weekend check
+            if date.weekday() >= 4 or date in self.holidays:  
                 if self._would_exceed_weekend_limit(worker_id, date):
                     return False, "too many weekend shifts in period"
 
@@ -310,7 +310,7 @@ class ConstraintChecker:
         except Exception as e:
             logging.error(f"Error checking constraints for worker {worker_id}: {str(e)}")
             return False, f"error: {str(e)}"
-     
+
     def _check_day_compatibility(self, worker_id, date):
         """Check if worker is compatible with all workers already assigned to this date"""
         if date not in self.schedule:
