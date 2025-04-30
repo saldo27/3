@@ -1,2 +1,4 @@
-Versión 2.5 respaldo
-Falta por ajustar número de festivos y guardias Rosell
+Versión 2.6 respaldo
+Ajustado:
+- Incompatibilidad
+- Número de festivos y guardias Rosell
