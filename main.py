@@ -95,7 +95,7 @@ class PasswordScreen(Screen):
 class WelcomeScreen(Screen):
     def __init__(self, **kwargs):
         super(WelcomeScreen, self).__init__(**kwargs)
-        print("DEBUG: PasswordScreen __init__ called!") # <<< ADD THIS LINE
+        print("DEBUG: PasswordScreen __init__ called!") 
         layout = BoxLayout(orientation='vertical', padding=20, spacing=10)
         
         layout.add_widget(Label(text='Bienvenido'))
@@ -176,20 +176,52 @@ class SetupScreen(Screen):
         # Gap between shifts
         gap_container = BoxLayout(orientation='vertical')
         gap_container.add_widget(Label(text='Distancia mínima entre guardias:', halign='left', size_hint_y=0.4))
-        self.gap_between_shifts = TextInput(multiline=False, input_filter='int', text='1', size_hint_y=0.6)
+        self.gap_between_shifts = TextInput(multiline=False, input_filter='int', text='3', size_hint_y=0.6)
         gap_container.add_widget(self.gap_between_shifts)
         numbers_section.add_widget(gap_container)
         
         # Max consecutive weekends
         weekends_container = BoxLayout(orientation='vertical')
         weekends_container.add_widget(Label(text='Máx Findes/Festivos consecutivos:', halign='left', size_hint_y=0.4))
-        self.max_consecutive_weekends = TextInput(multiline=False, input_filter='int', text='2', size_hint_y=0.6)
+        self.max_consecutive_weekends = TextInput(multiline=False, input_filter='int', text='3', size_hint_y=0.6)
         weekends_container.add_widget(self.max_consecutive_weekends)
         numbers_section.add_widget(weekends_container)
         
         form_layout.add_widget(numbers_section)
         
         # Add spacing using a BoxLayout instead of Widget
+        form_layout.add_widget(BoxLayout(size_hint_y=None, height=10))
+
+        # ------ NEW SECTION: Variable Shifts by Date Range ------
+        shifts_header = BoxLayout(orientation='vertical', size_hint_y=None, height=40)
+        shifts_header.add_widget(Label(
+            text='Periodo con variación en guardias/día(opcional):',
+            halign='left',
+            valign='bottom',
+            bold=True
+        ))
+        form_layout.add_widget(shifts_header)
+
+        # Create container for variable shifts
+        self.variable_shifts_container = GridLayout(
+            cols=1,
+            size_hint_y=None,
+            height=0,  # Will be updated dynamically
+            spacing=5
+        )
+        self.variable_shifts_container.bind(minimum_height=self.variable_shifts_container.setter('height'))
+        form_layout.add_widget(self.variable_shifts_container)
+
+        # Add button to add new variable shift rows
+        add_shift_btn = Button(
+            text='+ Añadir Periodo con variación guardias/día',
+            size_hint_y=None,
+            height=40
+        )
+        add_shift_btn.bind(on_press=self.add_variable_shift_row)
+        form_layout.add_widget(add_shift_btn)
+
+        # Add some spacing
         form_layout.add_widget(BoxLayout(size_hint_y=None, height=10))
         
         # Holidays - given more space with a clear label
@@ -247,13 +279,16 @@ class SetupScreen(Screen):
         self.layout.add_widget(button_section)
         
         # Add the main layout to the screen
-        self.add_widget(self.layout)      
+        self.add_widget(self.layout)
+
+        # Keep track of variable shift rows
+        self.variable_shift_rows = []
 
     def save_config(self, instance):
         try:
             start_date_str = self.start_date.text.strip()
             end_date_str = self.end_date.text.strip()
-        
+    
             # Validate dates - using DD-MM-YYYY format
             try:
                 # Parse using DD-MM-YYYY format
@@ -264,27 +299,27 @@ class SetupScreen(Screen):
             except ValueError as e:
                 self.show_error(f"Invalid date format: {str(e)}\nUse DD-MM-YYYY format")
                 return
-        
+    
             # Validate numeric inputs
             try:
                 num_workers = int(self.num_workers.text)
                 num_shifts = int(self.num_shifts.text)
                 gap_between_shifts = int(self.gap_between_shifts.text)
                 max_consecutive_weekends = int(self.max_consecutive_weekends.text)
-            
+        
                 if num_workers <= 0 or num_shifts <= 0:
                     raise ValueError("Number of workers and shifts must be positive")
-            
+        
                 if gap_between_shifts < 0:
                     raise ValueError("Minimum days between shifts cannot be negative")
-            
+        
                 if max_consecutive_weekends <= 0:
                     raise ValueError("Maximum consecutive weekend shifts must be positive")
-                
+            
             except ValueError as e:
                 self.show_error(f"Invalid numeric input: {str(e)}")
                 return
-        
+    
             # Parse holidays - also using DD-MM-YYYY format
             holidays_list = []
             if self.holidays.text.strip():
@@ -296,71 +331,149 @@ class SetupScreen(Screen):
                     except ValueError:
                         self.show_error(f"Formato de fecha no válido: {holiday_str}\nUse DD-MM-YYYY format")
                         return
-        
+    
+            # Parse variable shifts data
+            variable_shifts = []
+            for row_data in self.variable_shift_rows:
+                start_str = row_data['start_date'].text.strip()
+                end_str = row_data['end_date'].text.strip()
+                shifts_str = row_data['shifts'].text.strip()
+            
+                # Skip empty rows
+                if not start_str and not end_str and not shifts_str:
+                    continue
+            
+                # If any field is filled, all must be filled
+                if not (start_str and end_str and shifts_str):
+                    self.show_error("For variable shifts, all fields (start date, end date, and shifts) must be filled")
+                    return
+            
+                try:
+                    range_start = datetime.strptime(start_str, "%d-%m-%Y").date()
+                    range_end = datetime.strptime(end_str, "%d-%m-%Y").date()
+                    range_shifts = int(shifts_str)
+                
+                    if range_start > range_end:
+                        self.show_error(f"Variable shifts: Start date must be before end date")
+                        return
+                
+                    if range_shifts <= 0:
+                        self.show_error(f"Variable shifts: Number of shifts must be positive")
+                        return
+                
+                    # Ensure the range is within the overall period
+                    if range_start < start_date or range_end > end_date:
+                        self.show_error(f"Variable shifts: Date range must be within the overall schedule period")
+                        return
+                
+                    variable_shifts.append({
+                        'start_date': datetime.combine(range_start, datetime.min.time()),
+                        'end_date': datetime.combine(range_end, datetime.min.time()),
+                        'shifts': range_shifts
+                    })
+                
+                except ValueError as e:
+                    self.show_error(f"Invalid data in variable shifts: {str(e)}")
+                    return
+    
+            # Check for overlapping date ranges
+            for i, range1 in enumerate(variable_shifts):
+                for j, range2 in enumerate(variable_shifts):
+                    if i != j:
+                        # Check if ranges overlap
+                        if (range1['start_date'] <= range2['end_date'] and 
+                            range1['end_date'] >= range2['start_date']):
+                            self.show_error("Variable shifts: Date ranges cannot overlap")
+                            return
+    
             # Convert date objects to datetime objects with time set to midnight
             start_datetime = datetime.combine(start_date, datetime.min.time())
             end_datetime = datetime.combine(end_date, datetime.min.time())
             holidays_datetime = [datetime.combine(holiday, datetime.min.time()) for holiday in holidays_list]
-        
+    
             # Save configuration to app
             app = App.get_running_app()
             app.schedule_config = {
-                'start_date': start_datetime,  # Now we're saving datetime objects, not date objects
-                'end_date': end_datetime,      # Now we're saving datetime objects, not date objects
+                'start_date': start_datetime,
+                'end_date': end_datetime,
                 'num_workers': num_workers,
                 'num_shifts': num_shifts,
                 'gap_between_shifts': gap_between_shifts,
                 'max_consecutive_weekends': max_consecutive_weekends,
-                'holidays': holidays_datetime,  # Now we're saving datetime objects, not date objects
+                'holidays': holidays_datetime,
                 'workers_data': [],
                 'schedule': {},
-                'current_worker_index': 0
-            }
-        
+                'current_worker_index': 0,
+                'variable_shifts': variable_shifts  # Make sure this line is present
+}
+    
             # Notify user
             self.show_message('Introduce los datos de cada médico')
-    
+
         except Exception as e:
             self.show_error(f"Error saving configuration: {str(e)}")
 
     def load_config(self, instance):
         try:
             app = App.get_running_app()
-        
+    
             # Set input fields from configuration
             if hasattr(app, 'schedule_config') and app.schedule_config:
                 if 'start_date' in app.schedule_config:
                     self.start_date.text = app.schedule_config['start_date'].strftime("%d-%m-%Y")
-            
+        
                 if 'end_date' in app.schedule_config:
                     self.end_date.text = app.schedule_config['end_date'].strftime("%d-%m-%Y")
-                
+            
                 if 'num_workers' in app.schedule_config:
                     self.num_workers.text = str(app.schedule_config['num_workers'])
-                
+            
                 if 'num_shifts' in app.schedule_config:
                     self.num_shifts.text = str(app.schedule_config['num_shifts'])
-                
+            
                 # Load new settings if they exist, otherwise use defaults
                 if 'gap_between_shifts' in app.schedule_config:
                     self.gap_between_shifts.text = str(app.schedule_config['gap_between_shifts'])
                 else:
-                    self.gap_between_shifts.text = "1"  # Default value
-                
+                    self.gap_between_shifts.text = "3"  
+            
                 if 'max_consecutive_weekends' in app.schedule_config:
                     self.max_consecutive_weekends.text = str(app.schedule_config['max_consecutive_weekends'])
                 else:
-                    self.max_consecutive_weekends.text = "2"  # Default value
-                
+                    self.max_consecutive_weekends.text = "3"  
+            
                 if 'holidays' in app.schedule_config and app.schedule_config['holidays']:
                     # Format holidays in DD-MM-YYYY format
                     holidays_str = ", ".join([d.strftime("%d-%m-%Y") for d in app.schedule_config['holidays']])
                     self.holidays.text = holidays_str
+            
+                # Load variable shifts
+                if 'variable_shifts' in app.schedule_config and app.schedule_config['variable_shifts']:
+                    # Clear existing rows
+                    for row_data in list(self.variable_shift_rows):
+                        self.variable_shifts_container.remove_widget(row_data['row'])
+                    self.variable_shift_rows = []
                 
+                    # Add rows for each saved variable shift
+                    for shift_range in app.schedule_config['variable_shifts']:
+                        self.add_variable_shift_row()
+                        row_data = self.variable_shift_rows[-1]  # Get the last added row
+                    
+                        # Fill in the data
+                        start_date = shift_range['start_date']
+                        end_date = shift_range['end_date']
+                        shifts = shift_range['shifts']
+                    
+                        row_data['start_date'].text = start_date.strftime("%d-%m-%Y")
+                        row_data['end_date'].text = end_date.strftime("%d-%m-%Y")
+                        row_data['shifts'].text = str(shifts)
+            
                 self.show_message('Configuration loaded successfully')
             else:
                 self.show_message('No saved configuration found')
-                
+            
+        except Exception as e:
+            self.show_error(f"Error loading configuration: {str(e)}")            
         except Exception as e:
             self.show_error(f"Error loading configuration: {str(e)}")
     
@@ -385,6 +498,65 @@ class SetupScreen(Screen):
                      content=Label(text=message),
                      size_hint=(None, None), size=(400, 200))
         popup.open()
+
+    def add_variable_shift_row(self, instance=None):
+        """Add a new row for defining variable shifts for a date range"""
+        row = BoxLayout(orientation='horizontal', size_hint_y=None, height=60, spacing=5)
+    
+        # Start date for this range
+        start_range = BoxLayout(orientation='vertical', size_hint_x=0.3)
+        start_range.add_widget(Label(text='Desde (DD-MM-YYYY):', size_hint_y=0.3, halign='left'))
+        start_date_input = TextInput(multiline=False, size_hint_y=0.7)
+        start_range.add_widget(start_date_input)
+    
+        # End date for this range
+        end_range = BoxLayout(orientation='vertical', size_hint_x=0.3)
+        end_range.add_widget(Label(text='Hasta (DD-MM-YYYY):', size_hint_y=0.3, halign='left'))
+        end_date_input = TextInput(multiline=False, size_hint_y=0.7)
+        end_range.add_widget(end_date_input)
+    
+        # Number of shifts for this range
+        shifts_range = BoxLayout(orientation='vertical', size_hint_x=0.2)
+        shifts_range.add_widget(Label(text='Guardias/día:', size_hint_y=0.3, halign='left'))
+        shifts_input = TextInput(multiline=False, input_filter='int', size_hint_y=0.7)
+        shifts_range.add_widget(shifts_input)
+    
+        # Remove button
+        remove_btn = Button(text='X', size_hint_x=0.1)
+        remove_btn.row = row  # Store reference to the row for removal
+        remove_btn.bind(on_press=self.remove_variable_shift_row)
+    
+        row.add_widget(start_range)
+        row.add_widget(end_range)
+        row.add_widget(shifts_range)
+        row.add_widget(remove_btn)
+    
+        # Store the inputs for later retrieval
+        row_data = {
+            'row': row,
+            'start_date': start_date_input,
+            'end_date': end_date_input,
+            'shifts': shifts_input,
+            'remove_btn': remove_btn
+        }
+        self.variable_shift_rows.append(row_data)
+    
+        self.variable_shifts_container.add_widget(row)
+        self.variable_shifts_container.height = len(self.variable_shift_rows) * 65  # Update container height
+
+    def remove_variable_shift_row(self, instance):
+        """Remove a variable shift row"""
+        row = instance.row
+        # Find the row data entry
+        row_data = next((data for data in self.variable_shift_rows if data['row'] == row), None)
+    
+        if row_data:
+            # Remove the row from the container
+            self.variable_shifts_container.remove_widget(row)
+            # Remove the row data from our tracking list
+            self.variable_shift_rows.remove(row_data)
+            # Update container height
+            self.variable_shifts_container.height = len(self.variable_shift_rows) * 65
 
     def parse_holidays(self, holidays_str):
         """Parse and validate holiday dates"""
@@ -932,7 +1104,7 @@ class CalendarViewScreen(Screen):
                     }
                 stats[worker]['total_shifts'] += 1
             
-                if date.weekday() >= 5:
+                if date.weekday() >= 4:
                     stats[worker]['weekends'] += 1
                 
                 app = App.get_running_app()
@@ -983,7 +1155,7 @@ class CalendarViewScreen(Screen):
             
     def get_day_color(self, current_date):
         app = App.get_running_app()
-        is_weekend = current_date.weekday() >= 5
+        is_weekend = current_date.weekday() >= 4
         is_holiday = current_date in app.schedule_config.get('holidays', [])
         is_today = current_date.date() == datetime.now().date()
     
@@ -1169,7 +1341,7 @@ class CalendarViewScreen(Screen):
             self.details_layout.add_widget(header)
         
             app = App.get_running_app()
-            is_weekend = date.weekday() >= 5
+            is_weekend = date.weekday() >= 4
             is_holiday = date in app.schedule_config.get('holidays', [])
         
             # Show if it's a weekend or holiday
@@ -1388,7 +1560,7 @@ class CalendarViewScreen(Screen):
             # Filter for the current month being viewed
             if date.year == self.current_date.year and date.month == self.current_date.month:
                 month_stats['total_shifts'] += len(workers)
-                is_weekend = date.weekday() >= 5
+                is_weekend = date.weekday() >= 4
                 is_holiday = date in holidays
 
                 for i, worker_id in enumerate(workers):
@@ -1475,7 +1647,7 @@ class CalendarViewScreen(Screen):
         for date, workers in schedule.items():
             # No date filtering needed here for global summary
             global_stats['total_shifts'] += len(workers)
-            is_weekend = date.weekday() >= 5
+            is_weekend = date.weekday() >= 4
             is_holiday = date in holidays
 
             for i, worker_id in enumerate(workers):

@@ -1,0 +1,7 @@
+Buen trabajo.
+Hay que equilibrar:
+a) el número de shifts asignados (proporcional a tiempo trabajado).
+b) días de la semana asignados.
+c) shifts asignados al last post.
+
+Lo deseable es que entre todos los trabajadores la diferencia fuese +/- 1 para cada valor.

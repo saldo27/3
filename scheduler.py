@@ -30,12 +30,13 @@ class Scheduler:
     
             # Then validate the configuration
             self._validate_config(config)
-        
+    
             # Basic setup from config
             self.config = config
             self.start_date = config['start_date']
             self.end_date = config['end_date']
             self.num_shifts = config['num_shifts']
+            self.variable_shifts = config.get('variable_shifts', [])
             self.workers_data = config['workers_data']
             self.holidays = config.get('holidays', [])
 
@@ -54,17 +55,23 @@ class Scheduler:
                     worker['incompatible_with'] = list(incompatible_worker_ids - {worker_id}) # Exclude self
                 logging.debug(f"Worker {worker_id} incompatible_with list: {worker['incompatible_with']}")
             # --- END: Build incompatibility lists ---
-        
-            # Get the new configurable parameters with defaults
-            self.gap_between_shifts = config.get('gap_between_shifts', 1)
-            self.max_consecutive_weekends = config.get('max_consecutive_weekends', 2)
     
+            # Get the new configurable parameters with defaults
+            self.gap_between_shifts = config.get('gap_between_shifts', 3)
+            self.max_consecutive_weekends = config.get('max_consecutive_weekends', 3)
+
+            # Sort the variable shifts by start date for efficient lookup
+            #self.variable_shifts.sort(key=lambda x: x['start_date'])
+
             # Initialize tracking dictionaries
-            self.schedule = {}
+            self.schedule = {} # MOVED HERE, BEFORE _initialize_schedule_with_variable_shifts()
             self.worker_assignments = {w['id']: set() for w in self.workers_data}
             self.worker_posts = {w['id']: {p: 0 for p in range(self.num_shifts)} for w in self.workers_data}
             self.worker_weekdays = {w['id']: {i: 0 for i in range(7)} for w in self.workers_data}
             self.worker_weekends = {w['id']: [] for w in self.workers_data}
+
+            # Initialize the schedule structure with the appropriate number of shifts for each date
+            self._initialize_schedule_with_variable_shifts() # MOVED HERE, AFTER self.schedule = {}
 
             # Initialize tracking data structures
             self.worker_shift_counts = {w['id']: 0 for w in self.workers_data}
@@ -111,6 +118,15 @@ class Scheduler:
                 self.gap_between_shifts,
                 self.max_consecutive_weekends
             )
+
+            # Process variable shifts
+            #self.variable_shifts = config.get('variable_shifts', [])
+    
+            # Sort the variable shifts by start date for efficient lookup
+            #self.variable_shifts.sort(key=lambda x: x['start_date'])
+    
+            # Initialize the schedule structure with the appropriate number of shifts for each date
+            #self._initialize_schedule_with_variable_shifts()
 
             # Calculate targets before proceeding
             self._calculate_target_shifts()
@@ -230,7 +246,34 @@ class Scheduler:
             w['id']: {'gap': [], 'incompatibility': [], 'reduced_gap': []}
             for w in self.workers_data
         }
-        
+
+    def _initialize_schedule_with_variable_shifts(self):
+        # Initialize loop variables
+        current_date = self.start_date
+        dates_initialized = 0
+        variable_dates = 0
+        # Build a lookup for fast matching of variable ranges
+        var_cfgs = [
+            (cfg['start_date'], cfg['end_date'], cfg['shifts'])
+            for cfg in self.variable_shifts
+        ]
+        while current_date <= self.end_date:
+            # Determine how many shifts this date should have
+            shifts_for_date = self.num_shifts
+            for start, end, cnt in var_cfgs:
+                if start <= current_date <= end:
+                    shifts_for_date = cnt
+                    logging.info(f"Variable shifts applied for {current_date}: {cnt} shifts (default is {self.num_shifts})")
+                    variable_dates += 1
+                    break
+            # Initialize the schedule entry for this date
+            self.schedule[current_date] = [None] * shifts_for_date
+            dates_initialized += 1
+
+            # Move to next date
+            current_date += timedelta(days=1)
+
+
     def _get_schedule_months(self):
         """
         Calculate number of months in schedule period considering partial months
@@ -406,6 +449,34 @@ class Scheduler:
             logging.warning(f"Using fallback distribution: {default_target} non-mandatory shifts per worker plus mandatory shifts")
             return False
 
+    def _get_shifts_for_date(self, date):
+        """Determine the number of shifts for a specific date based on variable shifts configuration"""
+        # Add debug logging to help identify issues
+        logging.debug(f"Checking variable shifts for date: {date}")
+        logging.debug(f"Have {len(self.variable_shifts)} variable shift configurations")
+    
+        # Convert input date to a date-only value for comparison
+        check_date = date.date() if isinstance(date, datetime) else date
+    
+        # Check if the date falls within any of the variable shifts ranges
+        for shift_range in self.variable_shifts:
+            start_date = shift_range['start_date']
+            end_date = shift_range['end_date']
+        
+            # Convert to date objects for a uniform comparison
+            start_date_normalized = start_date.date() if isinstance(start_date, datetime) else start_date
+            end_date_normalized = end_date.date() if isinstance(end_date, datetime) else end_date
+        
+            # Now compare with normalized date objects
+            if start_date_normalized <= check_date <= end_date_normalized:
+                shifts = shift_range['shifts']
+                logging.debug(f"Found variable shifts config: {shifts} shifts for date {date}")
+                return shifts
+    
+        # If no variable shifts apply, use the default number of shifts
+        logging.debug(f"No variable shifts config found for {date}, using default {self.num_shifts}")
+        return self.num_shifts
+
     def _calculate_monthly_targets(self):
         """
         Calculate monthly target shifts for each worker based on their overall targets
@@ -543,11 +614,19 @@ class Scheduler:
             if worker_id not in self.worker_weekends:
                 self.worker_weekends[worker_id] = []
     
-        # Ensure schedule dictionary is initialized
+        # Ensure schedule dictionary entries match variable shifts configuration
         for current_date in self._get_date_range(self.start_date, self.end_date):
+            expected = self._get_shifts_for_date(current_date)
             if current_date not in self.schedule:
-                self.schedule[current_date] = [None] * self.num_shifts
-    
+                self.schedule[current_date] = [None] * expected
+            else:
+                # Pad or trim to expected length
+                actual = len(self.schedule[current_date])
+                if actual < expected:
+                    self.schedule[current_date].extend([None] * (expected - actual))
+                elif actual > expected:
+                    self.schedule[current_date] = self.schedule[current_date][:expected]
+                    
         logging.info("Data integrity check completed")
         return True
 
@@ -615,7 +694,7 @@ class Scheduler:
         # Check if the date is a weekend (Sat/Sun) or a defined holiday
         # Ensure self.holidays is a list or set of datetime.date objects
         # Ensure self.date_utils exists and has is_holiday method if using holidays
-        is_weekend_day = date.weekday() >= 5 # Saturday (5) or Sunday (6)
+        is_weekend_day = date.weekday() >= 4 # Saturday (5) or Sunday (6)
         is_holiday_day = hasattr(self, 'date_utils') and hasattr(self.date_utils, 'is_holiday') and self.date_utils.is_holiday(date)
         # Alternatively, if date_utils not available/reliable:
         # is_holiday_day = date in self.holidays
@@ -694,17 +773,17 @@ class Scheduler:
         """
         logging.info("Cleaning up schedule...")
 
-        # Ensure all dates in the period are in the schedule
+        # Ensure each date matches its variable-shifts count
         for date in self._get_date_range(self.start_date, self.end_date):
+            expected = self._get_shifts_for_date(date)
             if date not in self.schedule:
-                self.schedule[date] = [None] * self.num_shifts
-            elif len(self.schedule[date]) < self.num_shifts:
-                # Fill missing shifts with None
-                self.schedule[date].extend([None] * (self.num_shifts - len(self.schedule[date])))
-            elif len(self.schedule[date]) > self.num_shifts:
-                # Trim excess shifts (shouldn't happen, but just in case)
-                self.schedule[date] = self.schedule[date][:self.num_shifts]
-    
+                self.schedule[date] = [None] * expected
+            else:
+                actual = len(self.schedule[date])
+                if actual < expected:
+                    self.schedule[date].extend([None] * (expected - actual))
+                elif actual > expected:
+                    self.schedule[date] = self.schedule[date][:expected]    
         # Create a sorted version of the schedule
         sorted_schedule = {}
         for date in sorted(self.schedule.keys()):
@@ -1278,19 +1357,11 @@ class Scheduler:
             self.schedule_builder = ScheduleBuilder(self)
             logging.info("Scheduler initialized and ScheduleBuilder created.")
 
-            # --- ADDED: Initialize Schedule Structure ---
-            logging.info(f"Initializing schedule structure from {self.start_date} to {self.end_date} with {self.num_shifts} posts per day.")
-            if not self.start_date or not self.end_date or self.num_shifts is None:
-                 raise SchedulerError("Start date, end date, or num_shifts not properly initialized in Scheduler.")
-            if self.num_shifts <= 0:
-                 raise SchedulerError(f"Number of shifts per day (num_shifts) must be positive, got {self.num_shifts}.")
-
-            current_date = self.start_date
-            while current_date <= self.end_date:
-                self.schedule[current_date] = [None] * self.num_shifts
-                current_date += timedelta(days=1)
-            logging.info(f"Schedule structure initialized with {len(self.schedule)} dates.")
-            # --- END ADDED ---
+            # Initialize schedule structure honoring variable_shifts configuration
+            logging.info("Initializing schedule structure with variable shift counts...")
+            self.schedule = {}  # reset before init
+            self._initialize_schedule_with_variable_shifts()
+            logging.info(f"Schedule structure initialized with {len(self.schedule)} dates (variable shifts applied).")
 
         except Exception as e:
             logging.exception("Initialization failed during schedule generation.")

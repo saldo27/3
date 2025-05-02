@@ -1096,34 +1096,40 @@ class ScheduleBuilder:
 
                     # Check constraints and assign
                     logging.debug(f"      Checking constraints for Worker {worker_id} on {current_date} Post {post_idx}...")
-                    # Ensure constraint checker method exists and is correct
                     try:
-                        # Assuming check_constraints is the correct method name and location
-                        can_assign = self.scheduler.constraint_checker._check_constraints(worker_id, current_date, post_idx=post_idx, skip_constraints=False)
+                        passed, reason = self.scheduler.constraint_checker._check_constraints(
+                            worker_id,
+                            current_date,
+                            skip_constraints=False
+                        )
+                        can_assign = passed
+                        if not passed:
+                            logging.debug(f"      Constraint check failed: {reason}")
                     except AttributeError:
-                         logging.error("AttributeError: Could not find _check_constraints method on constraint_checker.")
-                         can_assign = False # Fail safe
+                        logging.error("AttributeError: _check_constraints method not found on constraint_checker.")
+                        can_assign = False
                     except Exception as e_check:
-                         logging.error(f"Exception during constraint check for {worker_id} on {current_date}: {e_check}", exc_info=True)
-                         can_assign = False # Fail safe
+                        logging.error(f"Exception during constraint check for {worker_id} on {current_date}: {e_check}", exc_info=True)
+                        can_assign = False
 
 
                     if can_assign:
-                         logging.info(f"      Assigning config mandatory shift: {current_date} Post {post_idx} -> Worker {worker_id}")
-                         self.scheduler.schedule[current_date][post_idx] = worker_id
-                         # Ensure _update_tracking_data exists and has correct signature
-                         try:
+                        logging.info(f"      Assigning config mandatory shift: {current_date} Post {post_idx} -> Worker {worker_id}")
+                        # Place in schedule
+                        self.scheduler.schedule[current_date][post_idx] = worker_id
+                        # Track assignment in scheduler.worker_assignments
+                        self.scheduler.worker_assignments.setdefault(worker_id, set()).add(current_date)
+                        # Update counts/tracking
+                        try:
                             self.scheduler._update_tracking_data(worker_id, current_date, post_idx)
-                         except AttributeError:
-                             logging.error("AttributeError: Could not find _update_tracking_data method on scheduler.")
-                         except Exception as e_update:
-                             logging.error(f"Exception during tracking update for {worker_id} on {current_date}: {e_update}", exc_info=True)
-
-                         assigned_count += 1
+                        except AttributeError:
+                            logging.error("AttributeError: Could not find _update_tracking_data method on scheduler.")
+                        except Exception as e_update:
+                            logging.error(f"Exception during tracking update for {worker_id} on {current_date}: {e_update}", exc_info=True)
+                        assigned_count += 1
                     else:
                          logging.warning(f"      Could not assign config mandatory shift for {worker_id} on {current_date} (Post {post_idx}) due to constraints.")
-                # --- End of indented block ---
-
+             
             # This line must be OUTSIDE the 'if' block, but INSIDE the 'while' loop
             current_date += timedelta(days=1)
         logging.debug("Finished date iteration for config mandatory shifts.")
@@ -1314,18 +1320,14 @@ class ScheduleBuilder:
         # Get all dates in period that are not weekends or holidays
         # or that already have some assignments but need more
         while current <= self.end_date:
-            date_needs_processing = False
-        
+            # for each date, check if we need to generate more shifts
             if current not in self.schedule:
-                # Date not in schedule at all
-                date_needs_processing = True
-            elif len(self.schedule[current]) < self.num_shifts:
-                # Date in schedule but has fewer shifts than needed
-                date_needs_processing = True
-            
-            if date_needs_processing:
                 dates_to_process.append(current)
-            
+            else:
+                # compare actual slots vs configured for that date
+                expected = self.scheduler._get_shifts_for_date(current)
+                if len(self.schedule[current]) < expected:
+                    dates_to_process.append(current)
             current += timedelta(days=1)
     
         # Sort based on direction
@@ -1336,7 +1338,7 @@ class ScheduleBuilder:
     
         return dates_to_process
     
-    def _assign_day_shifts_with_relaxation(self, date, attempt_number=0, relaxation_level=0):
+    def _assign_day_shifts_with_relaxation(self, date, attempt_number=20, relaxation_level=0):
         """Assign shifts for a given date with optional constraint relaxation"""
         logging.debug(f"Assigning shifts for {date.strftime('%d-%m-%Y')} (attempt: {attempt_number}, initial relax: {relaxation_level})")
 
@@ -1351,10 +1353,10 @@ class ScheduleBuilder:
              max_post_assigned_prev = current_len -1
 
 
-        # Determine starting post index. If schedule[date] already has items, start from the next index.
+        # Determine how many slots this date actually has (supports variable shifts)
         start_post = len(self.schedule.get(date, []))
-
-        for post in range(start_post, self.num_shifts):
+        total_slots = len(self.schedule.get(date, []))
+        for post in range(start_post, total_slots):
             assigned_this_post = False
             # Try each relaxation level until we succeed or run out of options
             for relax_level in range(relaxation_level + 1): # Start from specified level up to max (usually 0)
@@ -2750,52 +2752,58 @@ class ScheduleBuilder:
             self.scheduler._update_tracking_data(worker_X_id, date_from, post_from)
             
     def _can_swap_assignments(self, worker_id, date_from, post_from, date_to, post_to):
-         """ Checks if moving worker_id from (date_from, post_from) to (date_to, post_to) is valid """
-         # 1. Temporarily apply the swap to copies or directly (need rollback)
-         original_val_from = self.scheduler.schedule[date_from][post_from]
-         # Ensure target list is long enough for check
-         original_len_to = len(self.scheduler.schedule.get(date_to, []))
-         original_val_to = None
-         if original_len_to > post_to:
-              original_val_to = self.scheduler.schedule[date_to][post_to]
-         elif original_len_to == post_to: # Can append
-              pass
-         else: # Cannot place here if list isn't long enough and we aren't appending
-              return False
+        """ Checks if moving worker_id from (date_from, post_from) to (date_to, post_to) is valid """
+        # 1. Temporarily apply the swap to copies or directly (need rollback)
+        original_val_from = self.scheduler.schedule[date_from][post_from]
+        # Ensure target list is long enough for check
+        original_len_to = len(self.scheduler.schedule.get(date_to, []))
+        original_val_to = None
+        if original_len_to > post_to:
+            original_val_to = self.scheduler.schedule[date_to][post_to]
+        elif original_len_to == post_to: # Can append
+            pass
+        else: # Cannot place here if list isn't long enough and we aren't appending
+            return False
 
-         self.scheduler.schedule[date_from][post_from] = None
-         # Ensure list exists and is long enough
-         self.scheduler.schedule.setdefault(date_to, [None] * self.num_shifts) # Ensure list exists
-         while len(self.scheduler.schedule[date_to]) <= post_to:
-              self.scheduler.schedule[date_to].append(None)
-         self.scheduler.schedule[date_to][post_to] = worker_id
-         self.scheduler.worker_assignments[worker_id].remove(date_from)
-         self.scheduler.worker_assignments[worker_id].add(date_to)
+        self.scheduler.schedule[date_from][post_from] = None
+        # Ensure list exists and is long enough
+        self.scheduler.schedule.setdefault(date_to, [None] * self.num_shifts) # Ensure list exists
+        while len(self.scheduler.schedule[date_to]) <= post_to:
+             self.scheduler.schedule[date_to].append(None)
+        self.scheduler.schedule[date_to][post_to] = worker_id
+        if date_from in self.scheduler.worker_assignments.get(worker_id, set()):
+            self.scheduler.worker_assignments[worker_id].remove(date_from)
+        else:
+            logging.warning(
+                f"_can_swap_assignments: cannot remove {date_from} for worker {worker_id} — "
+                "date not tracked in worker_assignments"
+            )
+        self.scheduler.worker_assignments[worker_id].add(date_to)
 
-         # 2. Check constraints for BOTH dates with the new state
-         valid_from = self._check_all_constraints_for_date(date_from)
-         valid_to = self._check_all_constraints_for_date(date_to)
+        # 2. Check constraints for BOTH dates with the new state
+        valid_from = self._check_all_constraints_for_date(date_from)
+        valid_to = self._check_all_constraints_for_date(date_to)
 
-         # 3. Rollback the temporary changes
-         self.scheduler.schedule[date_from][post_from] = original_val_from # Should be worker_id
-         if original_len_to > post_to:
-             self.scheduler.schedule[date_to][post_to] = original_val_to # Should be None
-         elif original_len_to == post_to: # We appended, so remove
-             self.scheduler.schedule[date_to].pop()
-         # If list was shorter and not appendable, we returned False earlier
+        # 3. Rollback the temporary changes
+        self.scheduler.schedule[date_from][post_from] = original_val_from # Should be worker_id
+        if original_len_to > post_to:
+            self.scheduler.schedule[date_to][post_to] = original_val_to # Should be None
+        elif original_len_to == post_to: # We appended, so remove
+            self.scheduler.schedule[date_to].pop()
+        # If list was shorter and not appendable, we returned False earlier
 
-         # Adjust list length if needed after pop
-         if date_to in self.scheduler.schedule and len(self.scheduler.schedule[date_to]) == 0:
-             # Maybe don't delete empty dates? Or handle carefully.
-             # Let's assume empty lists are okay.
-             pass
-
-
-         self.scheduler.worker_assignments[worker_id].add(date_from)
-         self.scheduler.worker_assignments[worker_id].remove(date_to)
+        # Adjust list length if needed after pop
+        if date_to in self.scheduler.schedule and len(self.scheduler.schedule[date_to]) == 0:
+            # Maybe don't delete empty dates? Or handle carefully.
+            # Let's assume empty lists are okay.
+            pass
 
 
-         return valid_from and valid_to
+        self.scheduler.worker_assignments[worker_id].add(date_from)
+        self.scheduler.worker_assignments[worker_id].remove(date_to)
+
+
+        return valid_from and valid_to
 
     def _check_all_constraints_for_date(self, date):
         """ Checks all constraints for all workers assigned on a given date. """
@@ -2826,19 +2834,20 @@ class ScheduleBuilder:
                 # Assuming _check_constraints uses live data from self.scheduler
                 # Ensure the constraint checker method exists and is correctly referenced
                 try:
-                    # Indent level 4
-                    if not self.scheduler.constraint_checker._check_constraints(worker_id, date, post_idx=post, skip_constraints=False):
-                        # Indent level 5
-                        # logging.debug(f"LIVE Constraint check failed for {worker_id} on {date} post {post} during swap check.")
+                    passed, reason = self.scheduler.constraint_checker._check_constraints(
+                        worker_id,
+                        date,
+                        skip_constraints=False
+                    )
+                    if not passed:
+                        logging.debug(f"Constraint violation for worker {worker_id} on {date}: {reason}")
                         return False
                 except AttributeError:
-                    # Indent level 4 (aligned with try)
                     logging.error("Constraint checker or _check_constraints method not found during swap validation.")
-                    return False # Fail validation if checker is missing
+                    return False
                 except Exception as e_constr:
-                    # Indent level 4 (aligned with try)
                     logging.error(f"Error calling constraint checker for {worker_id} on {date}: {e_constr}", exc_info=True)
-                    return False # Fail validation on error
+                    return False
 
         # Indent level 1 (aligned with the initial 'if' and 'for' loops)
         return True
